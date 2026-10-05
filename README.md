@@ -65,7 +65,9 @@ implemented. The design and current upstream findings are recorded in
 [docs/research-2026-10-05.md](docs/research-2026-10-05.md).
 
 `gpu_solid_rt` has been built from a clean checkout and run on shadPS4 `dade3af` with Mesa
-lavapipe (CPU Vulkan) under Xvfb: PASS in 3/3 runs, with no critical shadPS4 log lines. Two
+lavapipe (CPU Vulkan) under Xvfb. It passes with no critical shadPS4 log lines once shadPS4
+carries [patches/shadps4/](patches/shadps4/) (see below); on stock `dade3af` the runner reports
+an infrastructure failure, because shadPS4 aborts on the test's end-of-pipe packet. Two
 negative controls fail as expected: readbacks disabled gives `got=00000000`, and a red fragment
 shader gives `got=ff0000ff`. The fixes that run needed (build, ELF format, config, shader footer,
 shadPS4 first-run dialog, OpenGNM EOP packet) and the logs are recorded in
@@ -80,8 +82,7 @@ Pinned build inputs are recorded in [deps.lock](deps.lock).
 Stage-0 build dependencies:
 
 - OpenOrbis PS4 Toolchain v0.5.4: guest compiler/sysroot/link/runtime inputs;
-- OpenGNM: GNM implementation/API, MIT; pinned to the `kaaburgh/opengnm` fork, which fixes an
-  EOP packet (`INT_SEL=3`) that makes shadPS4 abort;
+- OpenGNM: GNM implementation/API, MIT;
 - opengnm-psbc: SPIR-V -> PS4 GFX7 shader compiler, MIT project with vendored Mesa code;
 - SPIRV-Headers and Vulkan-Headers: host-side psbc build inputs;
 - `glslc`: GLSL -> SPIR-V.
@@ -135,12 +136,21 @@ libstdc++, which lacks C++23 pieces shadPS4 uses (`std::ranges::to`), and CMake 
 sudo apt install -y clang-19 clang-tools-19 libstdc++-14-dev ninja-build
 git clone --recursive https://github.com/shadps4-emu/shadPS4.git
 cd shadPS4
+git apply /path/to/shadps4-open-test/patches/shadps4/*.patch
 cmake -S . -B build/ -G Ninja -DCMAKE_C_COMPILER=clang-19 -DCMAKE_CXX_COMPILER=clang++-19 \
     -DCMAKE_CXX_COMPILER_CLANG_SCAN_DEPS=/usr/bin/clang-scan-deps-19
 cmake --build build --parallel "$(nproc)"
 ```
 
 See the upstream Linux build document for the full distro package list.
+
+Why the patch: OpenGNM's `sceGnmDrawCmdEventWriteEop` emits `EVENT_WRITE_EOP` with
+`INT_SEL=3` (`SEND_DATA_ON_CONFIRM`). shadPS4 `dade3af` already accepts that selector in
+`RELEASE_MEM`, but its `EVENT_WRITE_EOP` handler reaches `UNREACHABLE` and the emulator aborts
+right after the label write, so a polling test could print PASS while shadPS4 crashes (the
+runner now rejects that). The patch makes `EVENT_WRITE_EOP` follow shadPS4's existing
+`RELEASE_MEM` handling. Whether selector 3 raises an interrupt on real hardware is not
+established; the guest packet is left as OpenGNM emits it rather than adapted to the emulator.
 
 ## Run
 

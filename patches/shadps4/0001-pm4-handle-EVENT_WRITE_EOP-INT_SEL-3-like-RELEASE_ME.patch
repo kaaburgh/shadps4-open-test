@@ -1,0 +1,33 @@
+From f37980cd837ea621bf9e18f97c392a00fffc76e5 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 5 Oct 2026 14:15:03 +0000
+Subject: [PATCH] pm4: handle EVENT_WRITE_EOP INT_SEL=3 like RELEASE_MEM does
+
+PM4CmdEventWriteEop::SignalFence hits UNREACHABLE for
+InterruptSelect::IrqUndocumented (INT_SEL=3, SEND_DATA_ON_CONFIRM), so a
+guest EOP with that selector aborts the emulator right after the data
+write. PM4CmdReleaseMem::SignalFence already accepts the same value and
+treats it like IrqWhenWriteConfirm; do the same for EVENT_WRITE_EOP.
+
+OpenGNM's sceGnmDrawCmdEventWriteEop emits INT_SEL=3 for every
+non-discard data write, which made homebrew GNM workloads crash.
+---
+ src/video_core/amdgpu/pm4_cmds.h | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/src/video_core/amdgpu/pm4_cmds.h b/src/video_core/amdgpu/pm4_cmds.h
+index f4a0702..53c25d4 100644
+--- a/src/video_core/amdgpu/pm4_cmds.h
++++ b/src/video_core/amdgpu/pm4_cmds.h
+@@ -500,6 +500,8 @@ struct PM4CmdEventWriteEop {
+         case InterruptSelect::IrqOnly:
+             ASSERT(data_sel == DataSelect::None);
+             [[fallthrough]];
++        case InterruptSelect::IrqUndocumented:
++            [[fallthrough]];
+         case InterruptSelect::IrqWhenWriteConfirm: {
+             signal_irq();
+             break;
+-- 
+2.43.0
+
