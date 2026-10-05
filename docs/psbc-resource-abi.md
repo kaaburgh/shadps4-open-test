@@ -110,7 +110,10 @@ otherwise incomplete descriptor ABI for:
   metadata rather than SPIR-V, so the standalone ABI never constructs a dynamic binding; if
   RADV nevertheless reports dynamic-offset machinery for a shader, compilation is rejected;
 - `gl_NumWorkGroups` / the GFX7 grid-size pointer user data;
-- shaders that require scratch memory.
+- shaders that require scratch memory;
+- shaders whose set-0 pointer cannot be placed directly in two user SGPRs.
+  RADV would then fall back to an indirect table of one-SGPR set pointers,
+  which is a different guest ABI.
 
 These checks are intentionally conservative. A feature should be added only
 when its guest-visible user-data contract is represented in the shader
@@ -140,8 +143,12 @@ This mode changes both halves of the RADV user-SGPR contract consistently:
 - descriptor-set SGPR budgeting charges two SGPRs per directly bound set;
 - the actual `descriptors[set]` argument is declared as a two-SGPR
   `AC_ARG_CONST_ADDR`;
-- descriptor lowering preserves the low/high pair and uses it directly as the
-  SMEM base for buffer V# loads.
+- descriptor lowering keeps RADV's two-component resource index
+  (`set pointer low DWORD`, `byte offset`): SSBO access goes through
+  `nir_address_format_vec2_index_32bit_offset`, so a third component would
+  not survive to descriptor loading. `load_desc_ptr()` therefore returns the
+  low DWORD of the pair, and buffer V# loads take the high DWORD from the
+  second SGPR of the same argument instead of `address32_hi`.
 
 The full-address mode is intentionally stage-local. Resource-free stages keep
 the original key and argument layout, which is required for byte-identical
@@ -150,6 +157,14 @@ resource-free code generation.
 The two-pass nature of `radv_declare_shader_args()` is important here: changing
 only `add_descriptor_set()` would make the planning pass under-count SGPRs and
 would make the generated user-data layout inconsistent.
+
+## Known limitation: compute workgroups smaller than 64
+
+Independently of this patch, the pinned psbc aborts with
+`radv_nir_shader_info_pass: Assertion 'gfx_level >= GFX10 || wave_size == 64'`
+for GFX7 compute shaders whose workgroup is smaller than one wave64 (for
+example `local_size_x = 1` or `32`). Use workgroups of at least 64
+invocations; the verifier's shaders do.
 
 ## Known limitation: VS vertex-buffer table
 
