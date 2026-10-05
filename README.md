@@ -177,15 +177,23 @@ cmake --build build --parallel "$(nproc)"
 
 See the upstream Linux build document for the full distro package list.
 
-Why the patch: OpenGNM's `sceGnmDrawCmdEventWriteEop` emits `EVENT_WRITE_EOP` with
+Why the patches: for `0001`, OpenGNM's `sceGnmDrawCmdEventWriteEop` emits `EVENT_WRITE_EOP` with
 `INT_SEL=3` (`SEND_DATA_AFTER_WR_CONFIRM`): write the data after write confirmation and send
 no interrupt (Mesa RADV documents it as "Wait for write confirmation before writing data, but
 don't send an interrupt"). shadPS4 `dade3af`'s `EVENT_WRITE_EOP` handler reaches `UNREACHABLE`
 for that selector and the emulator aborts right after the label write, so a polling test
-could print PASS while shadPS4 crashes (the runner now rejects that). The patch accepts
+could print PASS while shadPS4 crashes (the runner now rejects that). `0001` accepts
 selector 3 as a no-interrupt case. It deliberately does not copy shadPS4's `RELEASE_MEM`
 handling, which treats 3 like an interrupt request. The guest packet is left as OpenGNM emits
 it rather than adapted to the emulator.
+
+`0002` sizes the buffer cache's sparse arenas within the device's limits. shadPS4 `dade3af`
+backs guest buffers with fixed 4 GiB sparse buffers, but a Vulkan buffer may not exceed
+`maxBufferSize` and has to fit in `sparseAddressSpaceSize`. Lavapipe reports 4 GiB - 1 and
+2 GiB, so the first guest buffer bind fails with `ErrorOutOfDeviceMemory` and the emulator
+aborts. Buffer workloads such as `buffer_compute_roundtrip` hit this; `gpu_solid_rt` does
+not, because it uses no buffers. With the patch, lavapipe gets 1 GiB arenas (the log prints
+`Using 0x40000000-byte sparse buffer arenas`), and devices that allow 4 GiB arenas keep them.
 
 ## Run
 
