@@ -106,7 +106,9 @@ otherwise incomplete descriptor ABI for:
 - descriptor arrays;
 - images, samplers, and texel buffers;
 - push constants;
-- dynamic-buffer descriptor machinery;
+- dynamic-buffer descriptor machinery. Vulkan's dynamic-buffer choice is pipeline-layout
+  metadata rather than SPIR-V, so the standalone ABI never constructs a dynamic binding; if
+  RADV nevertheless reports dynamic-offset machinery for a shader, compilation is rejected;
 - `gl_NumWorkGroups` / the GFX7 grid-size pointer user data;
 - shaders that require scratch memory.
 
