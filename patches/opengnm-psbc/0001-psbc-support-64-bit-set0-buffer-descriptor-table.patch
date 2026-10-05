@@ -1,22 +1,27 @@
-From 7e8f5da3a50755f5529372377d75b061a44a9460 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: shadps4-open-test <noreply@example.invalid>
 Date: Mon, 5 Oct 2026 18:00:00 +0200
 Subject: [PATCH] psbc: support 64-bit set-0 buffer descriptor tables
 
 The standalone compiler used a zeroed radv_shader_layout, so RADV's
-null-layout guards lowered UBO/SSBO resources to a zero V#. Supplying a
-real set-0 buffer layout fixes descriptor offsets, but the normal RADV
-descriptor-set ABI still passes only the low 32 address bits in one SGPR
-and reconstructs the high half from address32_hi.
+null-layout guards lowered UBO/SSBO resources to a zero V# while the
+binary still advertised PTR_INDIRECTRESOURCETABLE. Supplying a real
+set-0 buffer layout fixes descriptor offsets, but the normal RADV
+descriptor-set ABI passes only the low 32 address bits in one SGPR and
+reconstructs the high half from address32_hi.
 
 PS4 guest direct memory is not constrained below 4 GiB, so make the
 standalone resource ABI explicit:
 
 * synthesize set 0 from NIR UBO/SSBO variables, with one 16-byte V# per
   binding at 16*binding;
-* opt this stage into two-SGPR descriptor-set pointers and source the
-  high address dword from that second SGPR during buffer descriptor
-  loads;
+* opt this stage into two-SGPR descriptor-set pointers. A resource index
+  keeps the low half as its set pointer (load_desc_ptr reads channel 0 of
+  the pair); buffer descriptor loads take the high half from the second
+  SGPR of the argument instead of address32_hi;
+* count two SGPRs per direct set when budgeting user SGPRs, and reject
+  the shader if RADV would fall back to its indirect descriptor-set
+  table, which is a different guest ABI;
 * reject shader features whose required user-data ABI is not described
   by the standalone shader binary (other sets, descriptor arrays,
   non-buffer resources, push constants, dynamic descriptors,
@@ -24,32 +29,22 @@ standalone resource ABI explicit:
 
 The opt-in bit is part of radv_shader_stage_key and defaults to zero, so
 the vendored RADV behavior is unchanged for non-PSBC users. Resource-free
-standalone shaders also keep the existing path.
+standalone shaders also keep the existing path and compile byte-identically.
 
 The emitted PTR_INDIRECTRESOURCETABLE usage slot keeps its flag byte
 zero. For pointer usage types the pointer width is defined by the usage
 type; OpenGNM's sceGnmDrawCmdSetPointerUserData writes the two pointer
 dwords beginning at startregister.
-
 ---
-diff --git a/libpsbc/psbc_compile.h b/libpsbc/psbc_compile.h
---- a/libpsbc/psbc_compile.h
-+++ b/libpsbc/psbc_compile.h
-@@ -47,6 +47,13 @@
-     PSBC_RESULT_UNSUPPORTED_STAGE,
-     PSBC_RESULT_COMPILE_NIR,
-     PSBC_RESULT_COMPILE_ACO,
-+    PSBC_RESULT_UNSUPPORTED_DESCRIPTOR_SET,
-+    PSBC_RESULT_UNSUPPORTED_DESCRIPTOR_ARRAY,
-+    PSBC_RESULT_UNSUPPORTED_RESOURCE_TYPE,
-+    PSBC_RESULT_UNSUPPORTED_PUSH_CONSTANTS,
-+    PSBC_RESULT_UNSUPPORTED_DYNAMIC_BUFFER,
-+    PSBC_RESULT_UNSUPPORTED_NUM_WORKGROUPS,
-+    PSBC_RESULT_UNSUPPORTED_SCRATCH,
-     PSBC_RESULT_OUT_OF_MEMORY,
-     PSBC_RESULT_INTERNAL_ERROR,
- } PsbcResult;
+ libpsbc/psbc_compile.c                        | 166 +++++++++++++++++-
+ libpsbc/psbc_compile.h                        |   8 +
+ .../vulkan/nir/radv_nir_lower_descriptors.c   |  39 +++-
+ src/amd/vulkan/radv_shader.h                  |   4 +-
+ src/amd/vulkan/radv_shader_args.c             |  16 +-
+ 5 files changed, 222 insertions(+), 11 deletions(-)
+
 diff --git a/libpsbc/psbc_compile.c b/libpsbc/psbc_compile.c
+index bacbc6a..1c097ae 100644
 --- a/libpsbc/psbc_compile.c
 +++ b/libpsbc/psbc_compile.c
 @@ -27,6 +27,7 @@
@@ -60,7 +55,7 @@ diff --git a/libpsbc/psbc_compile.c b/libpsbc/psbc_compile.c
  #include "radv_shader.h"
  #include "radv_shader_args.h"
  #include "radv_shader_info.h"
-@@ -53,6 +54,90 @@
+@@ -53,6 +54,90 @@ static mesa_shader_stage psbc_to_mesa_stage(PsbcStage s) {
      }
  }
  
@@ -151,7 +146,7 @@ diff --git a/libpsbc/psbc_compile.c b/libpsbc/psbc_compile.c
  /* === Init/shutdown (refcounted) === */
  
  static int g_init_refcount = 0;
-@@ -696,10 +781,16 @@
+@@ -696,10 +781,16 @@ static PsbcResult buildshaderbinary(
      if (ctx->rargs->descriptors[0].used) {
          const GnmInputUsageSlot s = {
              .usagetype = GNM_SHINPUTUSAGE_PTR_INDIRECTRESOURCETABLE,
@@ -168,7 +163,7 @@ diff --git a/libpsbc/psbc_compile.c b/libpsbc/psbc_compile.c
          };
          memcpy(buf + offset, &s, sizeof(s));
          offset += sizeof(s);
-@@ -1019,20 +1110,55 @@
+@@ -1019,10 +1110,23 @@ PsbcResult psbc_compile_shader(
      nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
      radv_nir_lower_io(nir);
  
@@ -193,10 +188,7 @@ diff --git a/libpsbc/psbc_compile.c b/libpsbc/psbc_compile.c
      struct radv_graphics_state_key gfx_state = {0};
      gfx_state.ps.epilog.spi_shader_col_format = V_028714_SPI_SHADER_FP16_ABGR;
      gfx_state.ps.epilog.color_is_int8 = 0xff;
-     gfx_state.ps.has_epilog = false;
- 
-     radv_nir_shader_info_pass(
-         &compiler_info, nir, &layout, &stage.key, &gfx_state,
+@@ -1033,6 +1137,28 @@ PsbcResult psbc_compile_shader(
          RADV_PIPELINE_GRAPHICS, false, &stage.info
      );
  
@@ -225,7 +217,27 @@ diff --git a/libpsbc/psbc_compile.c b/libpsbc/psbc_compile.c
      /* Determine previous stage for shader args declaration.
       * HS/GS need previous_stage=VERTEX so that the merged-pipeline args
       * (prolog_inputs, vertex_buffers, etc.) are declared for the NIR
-@@ -1090,10 +1216,18 @@
+@@ -1050,6 +1176,19 @@ PsbcResult psbc_compile_shader(
+         &compiler_info, &gfx_state, &stage, previous_stage, NULL
+     );
+ 
++    /* RADV falls back to an indirect table of one-SGPR set pointers when the
++     * direct sets do not fit in user SGPRs. That is a different guest ABI;
++     * reject it rather than emitting it. */
++    if (owned_set0) {
++        const struct ac_arg set0_arg = stage.args.descriptors[0];
++        if (!set0_arg.used ||
++            stage.args.ac.args[set0_arg.arg_index].size != 2) {
++            free(owned_set0);
++            psbc_shutdown();
++            return PSBC_RESULT_UNSUPPORTED_USER_SGPRS;
++        }
++    }
++
+     stage.nir = nir;
+     stage.info.user_sgprs_locs = stage.args.user_sgprs_locs;
+     stage.info.inline_push_constant_mask = stage.args.ac.inline_push_const_mask;
+@@ -1090,10 +1229,18 @@ PsbcResult psbc_compile_shader(
      );
  
      if (!binary) {
@@ -244,7 +256,7 @@ diff --git a/libpsbc/psbc_compile.c b/libpsbc/psbc_compile.c
      /* Extract code from radv_shader_binary_legacy */
      struct radv_shader_binary_legacy* legacy =
          (struct radv_shader_binary_legacy*)binary;
-@@ -1127,6 +1261,7 @@
+@@ -1127,6 +1274,7 @@ PsbcResult psbc_compile_shader(
      out->size = output_size;
  
      free(binary);
@@ -252,7 +264,7 @@ diff --git a/libpsbc/psbc_compile.c b/libpsbc/psbc_compile.c
      psbc_shutdown();
  
      return result;
-@@ -1147,6 +1282,20 @@
+@@ -1147,6 +1295,22 @@ const char* psbc_result_string(PsbcResult result) {
      case PSBC_RESULT_UNSUPPORTED_STAGE: return "unsupported shader stage";
      case PSBC_RESULT_COMPILE_NIR:      return "SPIR-V to NIR compilation failed";
      case PSBC_RESULT_COMPILE_ACO:      return "ACO shader compilation failed";
@@ -270,89 +282,39 @@ diff --git a/libpsbc/psbc_compile.c b/libpsbc/psbc_compile.c
 +        return "standalone resource ABI does not support gl_NumWorkGroups";
 +    case PSBC_RESULT_UNSUPPORTED_SCRATCH:
 +        return "standalone resource ABI does not support scratch-using shaders";
++    case PSBC_RESULT_UNSUPPORTED_USER_SGPRS:
++        return "standalone resource ABI could not place the 64-bit descriptor-table pointer in user SGPRs";
      case PSBC_RESULT_OUT_OF_MEMORY:    return "out of memory";
      case PSBC_RESULT_INTERNAL_ERROR:   return "internal error";
      default:                           return "unknown error";
-diff --git a/src/amd/vulkan/radv_shader.h b/src/amd/vulkan/radv_shader.h
---- a/src/amd/vulkan/radv_shader.h
-+++ b/src/amd/vulkan/radv_shader.h
-@@ -101,7 +101,9 @@
-    /* Whether the shader is used with indirect pipeline binds. */
-    uint8_t indirect_bindable : 1;
- 
--   uint32_t reserved : 14;
-+   /* Standalone PSBC ABI: descriptor-set pointers occupy a full SGPR pair. */
-+   uint32_t full_64bit_descriptor_set_ptrs : 1;
-+   uint32_t reserved : 13;
- };
- 
- struct radv_ps_epilog_key {
-diff --git a/src/amd/vulkan/radv_shader_args.c b/src/amd/vulkan/radv_shader_args.c
---- a/src/amd/vulkan/radv_shader_args.c
-+++ b/src/amd/vulkan/radv_shader_args.c
-@@ -51,6 +51,7 @@
- struct radv_shader_args_state {
-    struct radv_shader_args *args;
-    bool gather_debug_info;
-+   bool full_64bit_descriptor_set_ptrs;
-    void *ctx;
-    const char *arg_names[AC_MAX_ARGS];
-    BITSET_DECLARE(user_data, AC_MAX_ARGS);
-@@ -114,14 +115,15 @@
- static void
- add_descriptor_set(struct radv_shader_args_state *state, uint32_t set)
- {
--   RADV_ADD_ARRAY_ARG(state, AC_ARG_SGPR, 1, AC_ARG_CONST_ADDR, descriptors, set);
-+   const unsigned pointer_sgprs = state->full_64bit_descriptor_set_ptrs ? 2 : 1;
-+   RADV_ADD_ARRAY_ARG(state, AC_ARG_SGPR, pointer_sgprs, AC_ARG_CONST_ADDR, descriptors, set);
- 
-    struct radv_userdata_info *ud_info = &state->args->user_sgprs_locs.descriptor_sets[set];
-    ud_info->sgpr_idx = state->args->num_user_sgprs;
--   ud_info->num_sgprs = 1;
-+   ud_info->num_sgprs = pointer_sgprs;
- 
-    state->args->user_sgprs_locs.descriptor_sets_enabled |= 1u << set;
--   state->args->num_user_sgprs++;
-+   state->args->num_user_sgprs += pointer_sgprs;
- }
- 
- static void
-@@ -976,6 +978,7 @@
- 
-    struct radv_shader_args_state state = {
-       .args = args,
-+      .full_64bit_descriptor_set_ptrs = stage->key.full_64bit_descriptor_set_ptrs,
-    };
- 
-    struct user_sgpr_info user_sgpr_info = {0};
-@@ -1004,12 +1007,18 @@
-          user_sgpr_info.remaining_sgprs -= RADV_MAX_HEAPS;
-       } else {
-          const uint32_t num_desc_set = util_bitcount(info->desc_set_used_mask);
-+         const uint32_t descriptor_set_sgprs =
-+            stage->key.full_64bit_descriptor_set_ptrs ? 2 : 1;
-+         const uint32_t direct_descriptor_sgprs = num_desc_set * descriptor_set_sgprs;
- 
--         if (info->force_indirect_descriptors || remaining_sgprs < num_desc_set) {
-+         if (!stage->key.full_64bit_descriptor_set_ptrs &&
-+             (info->force_indirect_descriptors || remaining_sgprs < direct_descriptor_sgprs)) {
-             user_sgpr_info.indirect_all_descriptor_sets = true;
-             user_sgpr_info.remaining_sgprs--;
-          } else {
--            user_sgpr_info.remaining_sgprs -= num_desc_set;
-+            assert(!info->force_indirect_descriptors);
-+            assert(remaining_sgprs >= direct_descriptor_sgprs);
-+            user_sgpr_info.remaining_sgprs -= direct_descriptor_sgprs;
-          }
-       }
- 
+diff --git a/libpsbc/psbc_compile.h b/libpsbc/psbc_compile.h
+index 000e7e1..f7c2323 100644
+--- a/libpsbc/psbc_compile.h
++++ b/libpsbc/psbc_compile.h
+@@ -47,6 +47,14 @@ typedef enum {
+     PSBC_RESULT_UNSUPPORTED_STAGE,
+     PSBC_RESULT_COMPILE_NIR,
+     PSBC_RESULT_COMPILE_ACO,
++    PSBC_RESULT_UNSUPPORTED_DESCRIPTOR_SET,
++    PSBC_RESULT_UNSUPPORTED_DESCRIPTOR_ARRAY,
++    PSBC_RESULT_UNSUPPORTED_RESOURCE_TYPE,
++    PSBC_RESULT_UNSUPPORTED_PUSH_CONSTANTS,
++    PSBC_RESULT_UNSUPPORTED_DYNAMIC_BUFFER,
++    PSBC_RESULT_UNSUPPORTED_NUM_WORKGROUPS,
++    PSBC_RESULT_UNSUPPORTED_SCRATCH,
++    PSBC_RESULT_UNSUPPORTED_USER_SGPRS,
+     PSBC_RESULT_OUT_OF_MEMORY,
+     PSBC_RESULT_INTERNAL_ERROR,
+ } PsbcResult;
 diff --git a/src/amd/vulkan/nir/radv_nir_lower_descriptors.c b/src/amd/vulkan/nir/radv_nir_lower_descriptors.c
+index 2412880..58352c0 100644
 --- a/src/amd/vulkan/nir/radv_nir_lower_descriptors.c
 +++ b/src/amd/vulkan/nir/radv_nir_lower_descriptors.c
-@@ -69,6 +69,19 @@
+@@ -68,6 +68,19 @@ convert_pointer_to_64_bit(nir_builder *b, lower_descriptors_state *state, nir_de
+    return nir_pack_64_2x32_split(b, ptr, nir_imm_int(b, state->address32_hi));
  }
  
- static nir_def *
++static nir_def *
 +convert_buffer_pointer_to_64_bit(nir_builder *b, lower_descriptors_state *state, nir_def *ptr, unsigned set)
 +{
 +   const struct ac_arg descriptor_arg = state->args->descriptors[set];
@@ -365,11 +327,27 @@ diff --git a/src/amd/vulkan/nir/radv_nir_lower_descriptors.c b/src/amd/vulkan/ni
 +   return convert_pointer_to_64_bit(b, state, ptr);
 +}
 +
-+static nir_def *
+ static nir_def *
  get_dynamic_descriptors_offset(nir_builder *b, lower_descriptors_state *state, uint32_t desc_set, uint32_t binding)
  {
-    struct radv_descriptor_set_layout *layout = state->layout->set[desc_set].layout;
-@@ -240,7 +253,13 @@
+@@ -103,7 +116,15 @@ load_desc_ptr(nir_builder *b, lower_descriptors_state *state, unsigned set)
+    }
+ 
+    assert(state->args->descriptors[set].used);
+-   return get_scalar_arg(b, 1, state->args->descriptors[set]);
++   const struct ac_arg arg = state->args->descriptors[set];
++
++   /* A two-SGPR descriptor-set argument is a full 64-bit pointer. The set
++    * pointer in a resource index stays the low half; descriptor loads take
++    * the high half from the argument (convert_buffer_pointer_to_64_bit). */
++   if (state->args->ac.args[arg.arg_index].size == 2)
++      return nir_channel(b, get_scalar_arg(b, 2, arg), 0);
++
++   return get_scalar_arg(b, 1, arg);
+ }
+ 
+ static nir_def *
+@@ -240,7 +261,13 @@ load_buffer_descriptor(nir_builder *b, lower_descriptors_state *state, nir_def *
     if (access & ACCESS_NON_UNIFORM)
        return nir_iadd(b, nir_channel(b, rsrc, 0), nir_channel(b, rsrc, 1));
  
@@ -384,7 +362,7 @@ diff --git a/src/amd/vulkan/nir/radv_nir_lower_descriptors.c b/src/amd/vulkan/ni
     return ac_nir_load_smem(b, 4, desc_set, nir_channel(b, rsrc, 1), 4, 0);
  }
  
-@@ -248,15 +264,19 @@
+@@ -248,15 +275,19 @@ static void
  visit_ssbo_descriptor_amd(nir_builder *b, lower_descriptors_state *state, nir_intrinsic_instr *intrin)
  {
     nir_def *rsrc = intrin->src[0].ssa;
@@ -405,4 +383,76 @@ diff --git a/src/amd/vulkan/nir/radv_nir_lower_descriptors.c b/src/amd/vulkan/ni
 +         b, state, nir_channel(b, rsrc, 0), descriptor_set);
        desc = ac_nir_load_smem(b, 4, ptr, nir_channel(b, rsrc, 1), 4, 0);
     }
+ 
+diff --git a/src/amd/vulkan/radv_shader.h b/src/amd/vulkan/radv_shader.h
+index ad3182a..61cf0ec 100644
+--- a/src/amd/vulkan/radv_shader.h
++++ b/src/amd/vulkan/radv_shader.h
+@@ -101,7 +101,9 @@ struct radv_shader_stage_key {
+    /* Whether the shader is used with indirect pipeline binds. */
+    uint8_t indirect_bindable : 1;
+ 
+-   uint32_t reserved : 14;
++   /* Standalone PSBC ABI: descriptor-set pointers occupy a full SGPR pair. */
++   uint32_t full_64bit_descriptor_set_ptrs : 1;
++   uint32_t reserved : 13;
+ };
+ 
+ struct radv_ps_epilog_key {
+diff --git a/src/amd/vulkan/radv_shader_args.c b/src/amd/vulkan/radv_shader_args.c
+index 029dc1f..e774414 100644
+--- a/src/amd/vulkan/radv_shader_args.c
++++ b/src/amd/vulkan/radv_shader_args.c
+@@ -51,6 +51,7 @@ allocate_inline_push_consts(const struct radv_shader_info *info, struct user_sgp
+ struct radv_shader_args_state {
+    struct radv_shader_args *args;
+    bool gather_debug_info;
++   bool full_64bit_descriptor_set_ptrs;
+    void *ctx;
+    const char *arg_names[AC_MAX_ARGS];
+    BITSET_DECLARE(user_data, AC_MAX_ARGS);
+@@ -114,14 +115,15 @@ add_ud_arg(struct radv_shader_args_state *state, unsigned size, enum ac_arg_type
+ static void
+ add_descriptor_set(struct radv_shader_args_state *state, uint32_t set)
+ {
+-   RADV_ADD_ARRAY_ARG(state, AC_ARG_SGPR, 1, AC_ARG_CONST_ADDR, descriptors, set);
++   const unsigned pointer_sgprs = state->full_64bit_descriptor_set_ptrs ? 2 : 1;
++   RADV_ADD_ARRAY_ARG(state, AC_ARG_SGPR, pointer_sgprs, AC_ARG_CONST_ADDR, descriptors, set);
+ 
+    struct radv_userdata_info *ud_info = &state->args->user_sgprs_locs.descriptor_sets[set];
+    ud_info->sgpr_idx = state->args->num_user_sgprs;
+-   ud_info->num_sgprs = 1;
++   ud_info->num_sgprs = pointer_sgprs;
+ 
+    state->args->user_sgprs_locs.descriptor_sets_enabled |= 1u << set;
+-   state->args->num_user_sgprs++;
++   state->args->num_user_sgprs += pointer_sgprs;
+ }
+ 
+ static void
+@@ -976,6 +978,7 @@ radv_declare_shader_args(const struct radv_compiler_info *compiler_info,
+ 
+    struct radv_shader_args_state state = {
+       .args = args,
++      .full_64bit_descriptor_set_ptrs = stage->key.full_64bit_descriptor_set_ptrs,
+    };
+ 
+    struct user_sgpr_info user_sgpr_info = {0};
+@@ -1004,12 +1007,15 @@ radv_declare_shader_args(const struct radv_compiler_info *compiler_info,
+          user_sgpr_info.remaining_sgprs -= RADV_MAX_HEAPS;
+       } else {
+          const uint32_t num_desc_set = util_bitcount(info->desc_set_used_mask);
++         const uint32_t descriptor_set_sgprs =
++            stage->key.full_64bit_descriptor_set_ptrs ? 2 : 1;
++         const uint32_t direct_descriptor_sgprs = num_desc_set * descriptor_set_sgprs;
+ 
+-         if (info->force_indirect_descriptors || remaining_sgprs < num_desc_set) {
++         if (info->force_indirect_descriptors || remaining_sgprs < direct_descriptor_sgprs) {
+             user_sgpr_info.indirect_all_descriptor_sets = true;
+             user_sgpr_info.remaining_sgprs--;
+          } else {
+-            user_sgpr_info.remaining_sgprs -= num_desc_set;
++            user_sgpr_info.remaining_sgprs -= direct_descriptor_sgprs;
+          }
+       }
  
