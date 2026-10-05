@@ -36,13 +36,16 @@ stage-0 build/runtime dependency.
 Current shadPS4 defaults disable GPU readbacks and linear-image readback. Therefore guest CPU
 verification of a GPU-written render target is not a neutral renderer-only oracle.
 
-By default, `scripts/run-test.py` creates an isolated shadPS4 `XDG_DATA_HOME` with:
+By default, `scripts/run-test.py` creates an isolated shadPS4 `XDG_DATA_HOME` whose
+`shadPS4/config.json` contains:
 
-```toml
-[GPU]
-readbacksMode = 2
-readbackLinearImages = true
+```json
+{"GPU": {"readbacks_mode": 2, "readback_linear_images_enabled": true}}
 ```
+
+Current shadPS4 reads `config.json`; a lone legacy `config.toml` triggers a modal migration
+dialog. The runner also pre-creates `shadPS4/home/1000/` because shadPS4 otherwise shows a modal
+"Save Migration" dialog on every fresh user directory, which hangs an unattended run.
 
 So `gpu_solid_rt` deliberately validates a combined path:
 
@@ -61,10 +64,16 @@ The repository scaffold, pinned dependency bootstrap, first guest test and host 
 implemented. The design and current upstream findings are recorded in
 [docs/research-2026-10-05.md](docs/research-2026-10-05.md).
 
-The prototype has **not yet been fully built and executed on a PS4 or shadPS4 GPU host from the
-research environment that created it**. The first real Linux GPU run is therefore a validation
-checkpoint; build/runtime failures should be fixed from evidence rather than hidden behind
-additional framework code.
+`gpu_solid_rt` has been built from a clean checkout and run on shadPS4 `dade3af` with Mesa
+lavapipe (CPU Vulkan) under Xvfb. It passes with no critical shadPS4 log lines once shadPS4
+carries [patches/shadps4/](patches/shadps4/) (see below); on stock `dade3af` the runner reports
+an infrastructure failure, because shadPS4 aborts on the test's end-of-pipe packet. Two
+negative controls fail as expected: readbacks disabled gives `got=00000000`, and a red fragment
+shader gives `got=ff0000ff`. The fixes that run needed (build, ELF format, config, shader footer,
+shadPS4 first-run dialog, OpenGNM EOP packet) and the logs are recorded in
+[the baseline report](https://github.com/kaaburgh/opengnm/blob/claude/magical-ride-7m5mrn/review/SHADPS4_LAVAPIPE_BASELINE.md).
+
+Not yet run on hardware GPUs (AMD/NVIDIA) or on a PS4.
 
 ## Dependencies
 
@@ -119,16 +128,31 @@ out/gpu_solid_rt/
 
 ## Build current shadPS4 on Ubuntu
 
-Current upstream recommends Clang 19:
+Current upstream recommends Clang 19. On Ubuntu 24.04, Clang 19 otherwise picks up GCC 13's
+libstdc++, which lacks C++23 pieces shadPS4 uses (`std::ranges::to`), and CMake needs
+`clang-scan-deps` for C++ module scanning:
 
 ```bash
+sudo apt install -y clang-19 clang-tools-19 libstdc++-14-dev ninja-build
 git clone --recursive https://github.com/shadps4-emu/shadPS4.git
 cd shadPS4
-cmake -S . -B build/ -DCMAKE_C_COMPILER=clang-19 -DCMAKE_CXX_COMPILER=clang++-19
+git apply /path/to/shadps4-open-test/patches/shadps4/*.patch
+cmake -S . -B build/ -G Ninja -DCMAKE_C_COMPILER=clang-19 -DCMAKE_CXX_COMPILER=clang++-19 \
+    -DCMAKE_CXX_COMPILER_CLANG_SCAN_DEPS=/usr/bin/clang-scan-deps-19
 cmake --build build --parallel "$(nproc)"
 ```
 
 See the upstream Linux build document for the full distro package list.
+
+Why the patch: OpenGNM's `sceGnmDrawCmdEventWriteEop` emits `EVENT_WRITE_EOP` with
+`INT_SEL=3` (`SEND_DATA_AFTER_WR_CONFIRM`): write the data after write confirmation and send
+no interrupt (Mesa RADV documents it as "Wait for write confirmation before writing data, but
+don't send an interrupt"). shadPS4 `dade3af`'s `EVENT_WRITE_EOP` handler reaches `UNREACHABLE`
+for that selector and the emulator aborts right after the label write, so a polling test
+could print PASS while shadPS4 crashes (the runner now rejects that). The patch accepts
+selector 3 as a no-interrupt case. It deliberately does not copy shadPS4's `RELEASE_MEM`
+handling, which treats 3 like an interrupt request. The guest packet is left as OpenGNM emits
+it rather than adapted to the emulator.
 
 ## Run
 
@@ -149,11 +173,27 @@ The host runner:
 - returns 0 for guest PASS, 1 for guest FAIL, and 2 for infrastructure/no-marker failure;
 - stops shadPS4 after a result marker if the frontend remains alive.
 
-shadPS4's own host-process exit status is not used as the semantic guest result.
+shadPS4's own host-process exit status is not used as the semantic guest result: current
+shadPS4 implements the guest `exit()` as an unreachable trap (SIGTRAP), though it logs
+`Exiting with status code N` first.
+
+### Without a GPU or display (lavapipe + Xvfb)
+
+```bash
+sudo apt install -y mesa-vulkan-drivers xvfb
+SHADPS4=/path/to/shadPS4/build/shadps4 \
+    bash scripts/run-test-lavapipe.sh gpu_solid_rt
+```
+
+This starts a private Xvfb, selects the lavapipe Vulkan ICD and runs the same host runner.
 
 ## Why raw ELF
 
-Current shadPS4 can boot a PS4 ELF directly. In the direct-ELF path, the executable's parent
+"Raw" means no PKG. The linked ELF still goes through OpenOrbis `create-fself`: shadPS4's
+loader only accepts the FreeBSD-ABI `ET_SCE_*` image with `PT_SCE_*` segments, not the plain
+`ET_DYN` output of `ld.lld`.
+
+Current shadPS4 can boot such an ELF directly. In the direct-ELF path, the executable's parent
 directory is mounted as `/app0`, so generated shader assets beside the ELF are available at
 `/app0/assets/...`.
 
@@ -171,8 +211,11 @@ provide a practical displayless `--headless` guest-run path. A recent upstream s
 report reaches the loader and then fails at SDL video initialization on a host with no display.
 
 For now, the runner refuses a Linux launch with neither `DISPLAY` nor `WAYLAND_DISPLAY`
-unless `--allow-no-display` is explicitly supplied. Do not assume Xvfb is sufficient for a
-Vulkan GPU run until it has been measured.
+unless `--allow-no-display` is explicitly supplied. Xvfb has been measured to work with lavapipe
+(`scripts/run-test-lavapipe.sh`); it has not been measured with a hardware Vulkan driver.
+`SDL_VIDEO_DRIVER=offscreen` gets past SDL init but shadPS4 then aborts in `CreateSurface`
+("Presentation not supported on this platform"): its `WindowSystemType::Headless` has no surface
+path yet.
 
 A small real shadPS4 headless frontend path is a separate follow-up task, not a prerequisite for
 validating the guest build itself.

@@ -85,6 +85,11 @@ clone_at "$VULKAN_HEADERS_REPO" "$VULKAN_HEADERS_SHA" "$DEPS/Vulkan-Headers"
 
 if [[ ! -x "$DEPS/opengnm-psbc/opengnm-psbc" ]]; then
     cp -- "$ROOT/tooling/opengnm-psbc-linux.mak" "$DEPS/opengnm-psbc/config.mak"
+    # The upstream Makefile does not generate every Mesa codegen output it needs.
+    bash "$ROOT/tooling/psbc-codegen.sh" "$DEPS/opengnm-psbc"
+    # Its source lists use $(wildcard), expanded before codegen runs, so on a
+    # fresh tree generated .c files would be skipped. Generate them first.
+    make -C "$DEPS/opengnm-psbc" generated
     make -C "$DEPS/opengnm-psbc" -j"$(nproc)"
 fi
 

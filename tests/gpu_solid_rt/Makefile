@@ -16,6 +16,9 @@ endif
 GLSLC ?= glslc
 
 ELF := $(OUT)/gpu_solid_rt.elf
+RAW_ELF := $(BUILD)/gpu_solid_rt.raw.elf
+OELF := $(BUILD)/gpu_solid_rt.oelf
+CREATE_FSELF := $(TOOLCHAIN)/bin/linux/create-fself
 OBJ := $(BUILD)/main.o
 VERT_SPV := $(BUILD)/fullscreen.vert.spv
 FRAG_SPV := $(BUILD)/solid.frag.spv
@@ -46,9 +49,15 @@ $(BUILD) $(OUT) $(OUT)/assets:
 $(OBJ): src/main.c | $(BUILD)
 	$(CC) $(CFLAGS) -c "$<" -o "$@"
 
-$(ELF): $(OBJ) $(OPENGNM)/libopengnm.a | $(OUT)
+# ld.lld emits a plain ET_DYN/SysV ELF; the PS4 loader (and shadPS4) needs the
+# FreeBSD-ABI ET_SCE_* image with PT_SCE_* segments that create-fself produces.
+$(ELF): $(RAW_ELF) | $(OUT)
+	OO_PS4_TOOLCHAIN="$(TOOLCHAIN)" "$(CREATE_FSELF)" -in="$<" -out="$(OELF)" \
+		--eboot "$@" --paid 0x3800000000000011
+
+$(RAW_ELF): $(OBJ) $(OPENGNM)/libopengnm.a | $(BUILD)
 	$(LD) -o "$@" "$(OBJ)" $(LDFLAGS) \
-		"$(OPENGNM)/libopengnm.a" -lc -lkernel -lSceGnmDriver \
+		"$(OPENGNM)/libopengnm.a" -lc -lkernel -lSceGnmDriver -lSceVideoOut \
 		"$(TOOLCHAIN)/lib/crt1.o" "$(TOOLCHAIN)/lib/crti.o" "$(TOOLCHAIN)/lib/crtn.o"
 
 $(VERT_SPV): assets/fullscreen.vert.glsl | $(BUILD)
