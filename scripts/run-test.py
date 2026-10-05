@@ -13,11 +13,33 @@ import time
 MARKER = re.compile(r"SHADTEST\s+name=(?P<name>\S+)\s+status=(?P<status>PASS|FAIL)\b(?P<detail>.*)")
 
 
+def write_isolated_config(root: Path) -> Path:
+    """Create the minimal host config required by the pixel-readback oracle."""
+    user_dir = root / "shadPS4"
+    user_dir.mkdir(parents=True, exist_ok=True)
+    config = user_dir / "config.toml"
+    config.write_text(
+        "[GPU]\n"
+        "# Stage-0 oracle reads a GPU-written linear RT from guest CPU memory.\n"
+        "# These settings make that readback requirement explicit instead of\n"
+        "# accidentally depending on a developer's global shadPS4 config.\n"
+        "readbacksMode = 2\n"
+        "readbackLinearImages = true\n",
+        encoding="utf-8",
+    )
+    return config
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("test", nargs="?", default="gpu_solid_rt")
     parser.add_argument("--shadps4", default=os.environ.get("SHADPS4"))
     parser.add_argument("--timeout", type=float, default=20.0)
+    parser.add_argument(
+        "--use-host-config",
+        action="store_true",
+        help="do not isolate XDG_DATA_HOME or force the readback oracle settings",
+    )
     parser.add_argument(
         "--allow-no-display",
         action="store_true",
@@ -27,7 +49,8 @@ def main() -> int:
 
     root = Path(__file__).resolve().parent.parent
     elf = root / "out" / args.test / f"{args.test}.elf"
-    log_path = root / "out" / args.test / "run.log"
+    run_dir = root / "out" / args.test
+    log_path = run_dir / "run.log"
 
     if not args.shadps4:
         print("SHADPS4 is not set and --shadps4 was not supplied", file=sys.stderr)
@@ -47,8 +70,16 @@ def main() -> int:
         )
         return 2
 
+    env = os.environ.copy()
+    if not args.use_host_config:
+        xdg_root = run_dir / "xdg-data"
+        config = write_isolated_config(xdg_root)
+        env["XDG_DATA_HOME"] = str(xdg_root)
+        print(f"using isolated shadPS4 config: {config}")
+        print("oracle settings: readbacksMode=Precise, readbackLinearImages=true")
+
     command = [args.shadps4, str(elf)]
-    log_path.parent.mkdir(parents=True, exist_ok=True)
+    run_dir.mkdir(parents=True, exist_ok=True)
 
     proc = subprocess.Popen(
         command,
@@ -56,6 +87,7 @@ def main() -> int:
         stderr=subprocess.STDOUT,
         text=True,
         bufsize=1,
+        env=env,
     )
     assert proc.stdout is not None
 
@@ -70,7 +102,6 @@ def main() -> int:
     try:
         while time.monotonic() < deadline:
             if proc.poll() is not None:
-                # Drain remaining buffered output before deciding.
                 rest = proc.stdout.read()
                 if rest:
                     for line in rest.splitlines(True):
@@ -103,8 +134,8 @@ def main() -> int:
 
     if marker_status is not None:
         if proc.poll() is None:
-            # The marker is the test oracle. Do not require the emulator UI/process
-            # to choose to exit on its own.
+            # The marker is the test oracle. shadPS4's host-process exit status is
+            # not the guest result contract.
             proc.terminate()
             try:
                 proc.wait(timeout=2)
