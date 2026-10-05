@@ -130,9 +130,10 @@ compiler when `--baseline-psbc` is supplied.
 
 ## Current implementation decisions
 
-The standalone patch carries a dedicated compiler-key bit for full descriptor-set
-addresses. The normal vendored RADV path keeps its existing one-SGPR descriptor
-pointer ABI; standalone psbc enables the full-address mode.
+The standalone patch carries a dedicated `radv_shader_stage_key` bit for full
+descriptor-set addresses. The normal vendored RADV path keeps its existing
+one-SGPR descriptor-pointer ABI; psbc enables the bit only for stages that
+actually have the synthesized set-0 buffer layout.
 
 This mode changes both halves of the RADV user-SGPR contract consistently:
 
@@ -142,9 +143,9 @@ This mode changes both halves of the RADV user-SGPR contract consistently:
 - descriptor lowering preserves the low/high pair and uses it directly as the
   SMEM base for buffer V# loads.
 
-If RADV cannot keep the set directly bound in that two-SGPR form and instead
-selects its indirect-all-descriptor-sets fallback, standalone psbc rejects the
-shader before descriptor lowering rather than emitting a different ABI.
+The full-address mode is intentionally stage-local. Resource-free stages keep
+the original key and argument layout, which is required for byte-identical
+resource-free code generation.
 
 The two-pass nature of `radv_declare_shader_args()` is important here: changing
 only `add_descriptor_set()` would make the planning pass under-count SGPRs and
