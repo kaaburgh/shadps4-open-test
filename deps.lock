@@ -10,18 +10,15 @@ OPENGNM_SHA=4b295ca54c82c83acf308d1c646a2dfa9ae57350
 OPENGNM_PSBC_REPO=https://github.com/PS4-OpenGNM/opengnm-psbc.git
 OPENGNM_PSBC_SHA=a92a1228ea3a64e4be9f0e61c2a65a5aa7ffed92
 
-FREEGNM_EXAMPLES_REPO=https://github.com/PS4-OpenGNM/freegnm-examples.git
-FREEGNM_EXAMPLES_SHA=ffd055563e5b849ebef1b276ba29e730199670f8
-
-# Republished upstream C branch used only for legacy header/tool-layer types required by examples.
-FREEGNM_REPO=https://github.com/lateleite/freegnm.git
-FREEGNM_SHA=ed01acd835f19b0a51f4d4d1f16446875e541024
-
 SPIRV_HEADERS_REPO=https://github.com/KhronosGroup/SPIRV-Headers.git
 SPIRV_HEADERS_SHA=86f980c731e62ae4eaf383d320449d71687936bf
 
 VULKAN_HEADERS_REPO=https://github.com/KhronosGroup/Vulkan-Headers.git
 VULKAN_HEADERS_SHA=c46850864f4661461b0f6cb9922c058ffea4915e
+
+# Reference-only baseline; bootstrap-deps.sh does not clone or build it.
+FREEGNM_EXAMPLES_REPO=https://github.com/PS4-OpenGNM/freegnm-examples.git
+FREEGNM_EXAMPLES_SHA=ffd055563e5b849ebef1b276ba29e730199670f8
 
 # Research baseline only; shadPS4 itself is expected to be built separately.
 SHADPS4_RESEARCH_SHA=dade3afda7ea3102faad8e39e616556a9cdde90b
