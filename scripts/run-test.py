@@ -12,6 +12,7 @@ import sys
 import time
 
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
+CRITICAL = re.compile(r"<Critical>")
 MARKER = re.compile(r"SHADTEST\s+name=(?P<name>\S+)\s+status=(?P<status>PASS|FAIL)\b(?P<detail>.*)")
 
 
@@ -112,7 +113,26 @@ def main() -> int:
     deadline = time.monotonic() + args.timeout
     marker_status: str | None = None
     marker_line: str | None = None
+    critical_line: str | None = None
     lines: list[str] = []
+
+    def consume(line: str) -> bool:
+        """Record one output line; return True once the result marker is seen."""
+        nonlocal marker_status, marker_line, critical_line
+        lines.append(line)
+        sys.stdout.write(line)
+        sys.stdout.flush()
+        plain = ANSI_ESCAPE.sub("", line)
+        match = MARKER.search(plain)
+        if match and match.group("name") == args.test:
+            marker_status = match.group("status")
+            marker_line = match.group(0)
+            return True
+        # A shadPS4 Critical (assert/unreachable) means the emulator is going
+        # down; a guest marker printed after it can still read PASS.
+        if critical_line is None and CRITICAL.search(plain):
+            critical_line = plain.strip()
+        return False
 
     try:
         while time.monotonic() < deadline:
@@ -120,12 +140,8 @@ def main() -> int:
                 rest = proc.stdout.read()
                 if rest:
                     for line in rest.splitlines(True):
-                        lines.append(line)
-                        sys.stdout.write(line)
-                        match = MARKER.search(ANSI_ESCAPE.sub("", line))
-                        if match and match.group("name") == args.test:
-                            marker_status = match.group("status")
-                            marker_line = match.group(0)
+                        if consume(line):
+                            break
                 break
 
             events = selector.select(timeout=0.25)
@@ -133,13 +149,7 @@ def main() -> int:
                 line = key.fileobj.readline()
                 if not line:
                     continue
-                lines.append(line)
-                sys.stdout.write(line)
-                sys.stdout.flush()
-                match = MARKER.search(ANSI_ESCAPE.sub("", line))
-                if match and match.group("name") == args.test:
-                    marker_status = match.group("status")
-                    marker_line = match.group(0)
+                if consume(line):
                     break
 
             if marker_status is not None:
@@ -157,6 +167,10 @@ def main() -> int:
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait()
+        if critical_line is not None:
+            print(f"guest marker ignored: {marker_line}", file=sys.stderr)
+            print(f"HOST_RESULT INFRA_FAIL shadPS4 critical before marker: {critical_line}")
+            return 2
         print(f"HOST_RESULT {marker_line}")
         return 0 if marker_status == "PASS" else 1
 
