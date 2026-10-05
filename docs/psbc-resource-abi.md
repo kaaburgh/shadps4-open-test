@@ -128,6 +128,28 @@ negative unsupported cases without an emulator. It can also compare the
 resource-free `gpu_solid_rt` shader binaries against an unpatched baseline
 compiler when `--baseline-psbc` is supplied.
 
+## Current implementation decisions
+
+The standalone patch carries a dedicated compiler-key bit for full descriptor-set
+addresses. The normal vendored RADV path keeps its existing one-SGPR descriptor
+pointer ABI; standalone psbc enables the full-address mode.
+
+This mode changes both halves of the RADV user-SGPR contract consistently:
+
+- descriptor-set SGPR budgeting charges two SGPRs per directly bound set;
+- the actual `descriptors[set]` argument is declared as a two-SGPR
+  `AC_ARG_CONST_ADDR`;
+- descriptor lowering preserves the low/high pair and uses it directly as the
+  SMEM base for buffer V# loads.
+
+If RADV cannot keep the set directly bound in that two-SGPR form and instead
+selects its indirect-all-descriptor-sets fallback, standalone psbc rejects the
+shader before descriptor lowering rather than emitting a different ABI.
+
+The two-pass nature of `radv_declare_shader_args()` is important here: changing
+only `add_descriptor_set()` would make the planning pass under-count SGPRs and
+would make the generated user-data layout inconsistent.
+
 ## Known limitation: VS vertex-buffer table
 
 This patch does not change RADV/OpenGNM's vertex-input path. The
