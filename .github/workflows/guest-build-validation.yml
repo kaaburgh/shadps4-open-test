@@ -28,8 +28,10 @@ jobs:
       - name: Bootstrap pinned dependencies
         run: bash scripts/bootstrap-deps.sh
 
-      - name: Build existing baseline
-        run: bash scripts/build-test.sh gpu_solid_rt
-
-      - name: Build buffer compute roundtrip
-        run: bash scripts/build-test.sh buffer_compute_roundtrip
+      - name: Build guest workloads present in this checkout
+        run: |
+          for test in gpu_solid_rt buffer_compute_roundtrip buffer_pingpong; do
+            if [[ -d "tests/$test" ]]; then
+              bash scripts/build-test.sh "$test"
+            fi
+          done
