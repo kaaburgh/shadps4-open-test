@@ -62,5 +62,26 @@ jobs:
           python3 tooling/verify-psbc-resource-abi.py \
             --baseline-psbc /tmp/opengnm-psbc-baseline
 
+      - name: Exercise bootstrap patch stamp
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .deps/openorbis
+          touch .deps/openorbis/link.x
+          touch .deps/opengnm/libopengnm.a
+          rm -f .deps/opengnm-psbc/.shadps4-open-test-patch-stamp
+
+          bash scripts/bootstrap-deps.sh
+
+          stamp_before="$(cat .deps/opengnm-psbc/.shadps4-open-test-patch-stamp)"
+          binary_before="$(sha256sum .deps/opengnm-psbc/opengnm-psbc)"
+          touch .deps/opengnm-psbc/.bootstrap-noop-sentinel
+
+          bash scripts/bootstrap-deps.sh
+
+          test -f .deps/opengnm-psbc/.bootstrap-noop-sentinel
+          test "$stamp_before" = "$(cat .deps/opengnm-psbc/.shadps4-open-test-patch-stamp)"
+          test "$binary_before" = "$(sha256sum .deps/opengnm-psbc/opengnm-psbc)"
+
       - name: Check bootstrap shell syntax
         run: bash -n scripts/bootstrap-deps.sh
