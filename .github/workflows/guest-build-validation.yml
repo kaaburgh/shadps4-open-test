@@ -1,0 +1,37 @@
+name: guest workload build validation
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "tests/**"
+      - "scripts/build-test.sh"
+      - "scripts/bootstrap-deps.sh"
+      - "deps.lock"
+      - "patches/opengnm-psbc/**"
+      - "tooling/**"
+      - ".github/workflows/guest-build-validation.yml"
+  workflow_dispatch:
+
+jobs:
+  guest-build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git curl ca-certificates make clang lld llvm glslc \
+            python3 python3-mako
+
+      - name: Bootstrap pinned dependencies
+        run: bash scripts/bootstrap-deps.sh
+
+      - name: Build guest workloads present in this checkout
+        run: |
+          for test in gpu_solid_rt buffer_compute_roundtrip buffer_pingpong; do
+            if [[ -d "tests/$test" ]]; then
+              bash scripts/build-test.sh "$test"
+            fi
+          done
