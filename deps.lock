@@ -4,8 +4,10 @@ OPENORBIS_VERSION=v0.5.4
 OPENORBIS_ARCHIVE=toolchain-llvm-18.tar.gz
 OPENORBIS_SHA256=3c7cd5bb593ca74fa1c13fd59f3938dc0fc07985167f7275063019e63abe4526
 
-OPENGNM_REPO=https://github.com/PS4-OpenGNM/opengnm.git
-OPENGNM_SHA=4b295ca54c82c83acf308d1c646a2dfa9ae57350
+# Fork of PS4-OpenGNM/opengnm 4b295ca with the EOP INT_SEL fix (INT_SEL=3 makes
+# shadPS4 abort in SignalFence). Return to upstream once the fix lands there.
+OPENGNM_REPO=https://github.com/kaaburgh/opengnm.git
+OPENGNM_SHA=9a2a77a3de259b56659329a7d6c1638b0c7857cc
 
 OPENGNM_PSBC_REPO=https://github.com/PS4-OpenGNM/opengnm-psbc.git
 OPENGNM_PSBC_SHA=a92a1228ea3a64e4be9f0e61c2a65a5aa7ffed92

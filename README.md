@@ -80,7 +80,8 @@ Pinned build inputs are recorded in [deps.lock](deps.lock).
 Stage-0 build dependencies:
 
 - OpenOrbis PS4 Toolchain v0.5.4: guest compiler/sysroot/link/runtime inputs;
-- OpenGNM: GNM implementation/API, MIT;
+- OpenGNM: GNM implementation/API, MIT; pinned to the `kaaburgh/opengnm` fork, which fixes an
+  EOP packet (`INT_SEL=3`) that makes shadPS4 abort;
 - opengnm-psbc: SPIR-V -> PS4 GFX7 shader compiler, MIT project with vendored Mesa code;
 - SPIRV-Headers and Vulkan-Headers: host-side psbc build inputs;
 - `glslc`: GLSL -> SPIR-V.
