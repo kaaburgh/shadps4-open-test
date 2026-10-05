@@ -141,6 +141,24 @@ def parse_compute_sb(path: pathlib.Path) -> tuple[int, list[int]]:
     return start_register, words
 
 
+def decode_sop1_constant_move(word: int) -> tuple[int, int] | None:
+    # Sea Islands / GCN 1.1 SOP1 encoding: [31:23]=101111101,
+    # sdst[22:16], op[15:8], ssrc0[7:0]. On GCN 1.0/1.1,
+    # s_mov_b32 is op 3 and s_mov_b64 is op 4. Inline scalar constants
+    # use source encodings >= 128 (255 is a literal constant).
+    if (word >> 23) != 0b101111101:
+        return None
+    op = (word >> 8) & 0xFF
+    if op not in {3, 4}:
+        return None
+    ssrc0 = word & 0xFF
+    if ssrc0 < 128:
+        return None
+    sdst = (word >> 16) & 0x7F
+    width = 1 if op == 3 else 2
+    return sdst, width
+
+
 def decode_and_verify(words: list[int], table_sgpr: int) -> None:
     # Sea Islands SMRD encoding requested by the ABI contract:
     # [31:27]=11000, op[26:22], sdst[21:15], sbase[14:9]*2,
@@ -174,6 +192,18 @@ def decode_and_verify(words: list[int], table_sgpr: int) -> None:
     # buffer_store_dword (0x1c). Restricting the scan to those opcodes avoids
     # treating literal/extension DWORDs from unrelated 64-bit instructions as
     # MUBUF headers.
+    #
+    # Also reject the original null-V# failure mode explicitly: an earlier
+    # table load is not sufficient if a later s_mov_b32/b64 constant clobbers
+    # any DWORD in the four-SGPR SRSRC before MUBUF consumes it.
+    constant_moves: list[tuple[int, int, int]] = []
+    for pc, word in enumerate(words):
+        move = decode_sop1_constant_move(word)
+        if move is not None:
+            sdst, width = move
+            constant_moves.append((pc, sdst, width))
+
+    table_load_pc = {load["sdst"]: load["word_index"] for load in table_loads}
     mubuf_count = 0
     used_offsets: set[int] = set()
     for pc in range(len(words) - 1):
@@ -191,6 +221,19 @@ def decode_and_verify(words: list[int], table_sgpr: int) -> None:
                 f"MUBUF at DWORD {pc} uses s[{srsrc}:{srsrc + 3}], "
                 "which is not produced by a set-0 s_load_dwordx4"
             )
+
+        load_pc = table_load_pc[srsrc]
+        for move_pc, move_dst, move_width in constant_moves:
+            if not (load_pc < move_pc < pc):
+                continue
+            move_end = move_dst + move_width - 1
+            if move_dst <= srsrc + 3 and move_end >= srsrc:
+                raise RuntimeError(
+                    f"MUBUF at DWORD {pc} uses s[{srsrc}:{srsrc + 3}], "
+                    f"but a constant s_mov clobbers s[{move_dst}:{move_end}] "
+                    f"after its table load at DWORD {load_pc}"
+                )
+
         used_offsets.add(descriptor_loads[srsrc])
 
     if mubuf_count == 0:
