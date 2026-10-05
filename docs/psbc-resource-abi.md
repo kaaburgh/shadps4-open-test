@@ -126,8 +126,8 @@ create a synthetic descriptor layout and does not enable the two-SGPR
 descriptor-pointer path. This is intentional so existing resource-free
 shaders retain their previous code-generation path.
 
-`tooling/verify-psbc-resource-abi.py` checks the positive SSBO case and
-negative unsupported cases without an emulator. It can also compare the
+`tooling/verify-psbc-resource-abi.py` checks positive SSBO and UBO +
+sparse-binding cases and negative unsupported cases without an emulator. It can also compare the
 resource-free `gpu_solid_rt` shader binaries against an unpatched baseline
 compiler when `--baseline-psbc` is supplied.
 

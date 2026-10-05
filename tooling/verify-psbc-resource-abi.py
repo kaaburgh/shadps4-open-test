@@ -13,7 +13,12 @@ import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
-POSITIVE_SHADER = r"""
+# Each positive case maps to its shader and the set-0 V# DWORD offsets
+# (4 * binding) that must be loaded from the table and consumed.
+POSITIVE_CASES = {
+    # Two consecutive SSBO bindings: buffer_load_dword / buffer_store_dword.
+    "ssbo-pair": (
+        r"""
 #version 450
 layout(local_size_x = 64) in;
 layout(std430, set = 0, binding = 0) readonly buffer In { uint src[]; };
@@ -22,7 +27,25 @@ void main() {
     uint i = gl_GlobalInvocationID.x;
     dst[i] = (src[i] ^ 0xA5A5A5A5u) + i * 0x9E3779B1u;
 }
-"""
+""",
+        {0, 4},
+    ),
+    # A UBO plus a sparse SSBO binding (binding 1 unused). The UBO goes through
+    # a different load path (scalar s_buffer_load) than the SSBO store.
+    "ubo-sparse": (
+        r"""
+#version 450
+layout(local_size_x = 64) in;
+layout(std140, set = 0, binding = 0) uniform Params { uint xor_key; uint mul; } p;
+layout(std430, set = 0, binding = 2) writeonly buffer Out { uint dst[]; };
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    dst[i] = (i ^ p.xor_key) * p.mul;
+}
+""",
+        {0, 8},
+    ),
+}
 
 # Negative shaders use a 64-wide workgroup like the positive one: the pinned
 # psbc asserts in radv_nir_shader_info_pass() for GFX7 compute workgroups
@@ -162,7 +185,31 @@ def decode_sop1_constant_move(word: int) -> tuple[int, int] | None:
     return sdst, width
 
 
-def decode_and_verify(words: list[int], table_sgpr: int) -> None:
+# GFX7 SMRD s_buffer_load_dword{,x2,x4,x8,x16}: the resource is the four SGPRs
+# starting at sbase*2.
+S_BUFFER_LOAD_OPS = {8, 9, 10, 11, 12}
+# GFX7 MUBUF buffer_load_dword (0x0c) and buffer_store_dword (0x1c).
+# Restricting the scan to these opcodes avoids treating literal/extension
+# DWORDs from unrelated 64-bit instructions as MUBUF headers.
+MUBUF_OPS = {0x0C, 0x1C}
+
+
+def decode_resource_consumers(words: list[int]) -> list[tuple[int, str, int]]:
+    """Return (pc, kind, first SGPR of the four-SGPR resource) per consumer."""
+    consumers: list[tuple[int, str, int]] = []
+    for pc, word in enumerate(words):
+        if (word >> 27) == 0b11000:
+            if ((word >> 22) & 0x1F) in S_BUFFER_LOAD_OPS:
+                consumers.append((pc, "s_buffer_load", ((word >> 9) & 0x3F) * 2))
+        elif (word >> 26) == 0b111000 and pc + 1 < len(words):
+            if ((word >> 18) & 0x7F) in MUBUF_OPS:
+                consumers.append((pc, "MUBUF", ((words[pc + 1] >> 16) & 0x1F) * 4))
+    return consumers
+
+
+def decode_and_verify(
+    words: list[int], table_sgpr: int, expected_offsets: set[int]
+) -> dict[int, set[str]]:
     # Sea Islands SMRD encoding requested by the ABI contract:
     # [31:27]=11000, op[26:22], sdst[21:15], sbase[14:9]*2,
     # imm[8], offset[7:0] (DWORDs).
@@ -187,20 +234,18 @@ def decode_and_verify(words: list[int], table_sgpr: int) -> None:
             table_load_pc[sdst] = pc
 
     offsets = set(descriptor_loads.values())
-    if offsets != {0, 4}:
+    if offsets != expected_offsets:
         raise RuntimeError(
-            f"expected set-0 V# loads at DWORD offsets {{0, 4}}, got {sorted(offsets)}"
+            f"expected set-0 V# loads at DWORD offsets {sorted(expected_offsets)}, "
+            f"got {sorted(offsets)}"
         )
 
-    # MUBUF: dword0 [31:26]=111000, op[24:18]; dword1 srsrc[20:16]*4.
-    # The positive shader uses GFX7 buffer_load_dword (0x0c) and
-    # buffer_store_dword (0x1c). Restricting the scan to those opcodes avoids
-    # treating literal/extension DWORDs from unrelated 64-bit instructions as
-    # MUBUF headers.
+    # Consumers: MUBUF dword0 [31:26]=111000, op[24:18], dword1 srsrc[20:16]*4;
+    # SMRD s_buffer_load with its resource at sbase*2.
     #
     # Also reject the original null-V# failure mode explicitly: an earlier
     # table load is not sufficient if a later s_mov_b32/b64 constant clobbers
-    # any DWORD in the four-SGPR SRSRC before MUBUF consumes it.
+    # any DWORD in the four-SGPR resource before it is consumed.
     constant_moves: list[tuple[int, int, int]] = []
     for pc, word in enumerate(words):
         move = decode_sop1_constant_move(word)
@@ -208,21 +253,15 @@ def decode_and_verify(words: list[int], table_sgpr: int) -> None:
             sdst, width = move
             constant_moves.append((pc, sdst, width))
 
-    mubuf_count = 0
-    used_offsets: set[int] = set()
-    for pc in range(len(words) - 1):
-        word0 = words[pc]
-        if (word0 >> 26) != 0b111000:
-            continue
-        op = (word0 >> 18) & 0x7F
-        if op not in {0x0C, 0x1C}:
-            continue
-        word1 = words[pc + 1]
-        srsrc = ((word1 >> 16) & 0x1F) * 4
-        mubuf_count += 1
+    consumers = decode_resource_consumers(words)
+    if not consumers:
+        raise RuntimeError("no buffer resource consumers found in positive shader")
+
+    consumed: dict[int, set[str]] = {}
+    for pc, kind, srsrc in consumers:
         if srsrc not in descriptor_loads:
             raise RuntimeError(
-                f"MUBUF at DWORD {pc} uses s[{srsrc}:{srsrc + 3}], "
+                f"{kind} at DWORD {pc} uses s[{srsrc}:{srsrc + 3}], "
                 "which is not produced by a set-0 s_load_dwordx4"
             )
 
@@ -233,38 +272,45 @@ def decode_and_verify(words: list[int], table_sgpr: int) -> None:
             move_end = move_dst + move_width - 1
             if move_dst <= srsrc + 3 and move_end >= srsrc:
                 raise RuntimeError(
-                    f"MUBUF at DWORD {pc} uses s[{srsrc}:{srsrc + 3}], "
+                    f"{kind} at DWORD {pc} uses s[{srsrc}:{srsrc + 3}], "
                     f"but a constant s_mov clobbers s[{move_dst}:{move_end}] "
                     f"after its table load at DWORD {load_pc}"
                 )
 
-        used_offsets.add(descriptor_loads[srsrc])
+        consumed.setdefault(descriptor_loads[srsrc], set()).add(kind)
 
-    if mubuf_count == 0:
-        raise RuntimeError("no MUBUF instructions found in positive shader")
-    if used_offsets != {0, 4}:
+    if set(consumed) != expected_offsets:
         raise RuntimeError(
-            f"MUBUF instructions did not consume both bindings; used offsets {sorted(used_offsets)}"
+            f"loaded V#s were not all consumed: expected offsets {sorted(expected_offsets)}, "
+            f"consumed {sorted(consumed)}"
         )
+    return consumed
 
 
 def verify_positive(psbc: str, glslc: str, tmp: pathlib.Path) -> None:
-    source = tmp / "resource-abi.comp"
-    spirv = tmp / "resource-abi.spv"
-    sb = tmp / "resource-abi.sb"
-    source.write_text(POSITIVE_SHADER)
-    compile_spirv(glslc, source, spirv, "compute")
-    proc = compile_psbc(psbc, spirv, sb, "compute")
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"positive psbc compile failed ({proc.returncode})\n{proc.stderr}"
+    for name, (shader, expected_offsets) in POSITIVE_CASES.items():
+        source = tmp / f"{name}.comp"
+        spirv = tmp / f"{name}.spv"
+        sb = tmp / f"{name}.sb"
+        source.write_text(shader)
+        compile_spirv(glslc, source, spirv, "compute")
+        proc = compile_psbc(psbc, spirv, sb, "compute")
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"positive case {name}: psbc compile failed ({proc.returncode})\n{proc.stderr}"
+            )
+        table_sgpr, words = parse_compute_sb(sb)
+        try:
+            consumed = decode_and_verify(words, table_sgpr, expected_offsets)
+        except RuntimeError as exc:
+            raise RuntimeError(f"positive case {name}: {exc}") from None
+        uses = ", ".join(
+            f"{offset}: {'/'.join(sorted(kinds))}" for offset, kinds in sorted(consumed.items())
         )
-    table_sgpr, words = parse_compute_sb(sb)
-    decode_and_verify(words, table_sgpr)
-    print(
-        f"PASS positive: table pointer s[{table_sgpr}:{table_sgpr + 1}], "
-        "V# offsets 0/4 DWORD, all MUBUF resources loaded through SMRD"
-    )
+        print(
+            f"PASS positive {name}: table pointer s[{table_sgpr}:{table_sgpr + 1}], "
+            f"V# DWORD offsets consumed via SMRD-loaded descriptors ({uses})"
+        )
 
 
 def verify_negative(psbc: str, glslc: str, tmp: pathlib.Path) -> None:

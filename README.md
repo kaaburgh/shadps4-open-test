@@ -136,10 +136,12 @@ After bootstrap, the descriptor ABI can be checked without shadPS4:
 python3 tooling/verify-psbc-resource-abi.py
 ```
 
-The verifier compiles a small GFX7 SSBO compute shader, decodes the relevant Sea Islands SMRD
-and MUBUF words directly, verifies V# loads for bindings 0 and 1 at DWORD offsets 0 and 4 from
-the `PTR_INDIRECTRESOURCETABLE` SGPR pair, and checks that every MUBUF resource comes from
-those loads, with no constant `s_mov` overwriting a loaded V#. It also verifies compile-time
+The verifier compiles small GFX7 compute shaders and decodes the relevant Sea Islands SMRD and
+MUBUF words directly. For two SSBOs at bindings 0/1, and for a UBO at binding 0 plus an SSBO at
+sparse binding 2, it verifies V# loads at DWORD offsets 0/4 and 0/8 from the
+`PTR_INDIRECTRESOURCETABLE` SGPR pair. It checks that each loaded V# is consumed: the SSBOs by
+MUBUF, the UBO by `s_buffer_load`. Every resource must come from those loads, with no constant
+`s_mov` overwriting a loaded V#. It also verifies compile-time
 rejection of set 1, descriptor arrays and `gl_NumWorkGroups`. Run against the unpatched pinned
 psbc, it fails because no V# is loaded from the table.
 
