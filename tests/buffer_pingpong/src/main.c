@@ -620,9 +620,6 @@ int main(void) {
         }
     }
 
-
-
-    {
     {
         char detail[208];
         snprintf(detail, sizeof(detail),
