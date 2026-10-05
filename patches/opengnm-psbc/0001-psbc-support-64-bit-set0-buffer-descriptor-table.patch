@@ -168,20 +168,22 @@ diff --git a/libpsbc/psbc_compile.c b/libpsbc/psbc_compile.c
          };
          memcpy(buf + offset, &s, sizeof(s));
          offset += sizeof(s);
-@@ -1019,20 +1110,54 @@
+@@ -1019,20 +1110,55 @@
      nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
      radv_nir_lower_io(nir);
  
 +    /* Build the minimal standalone descriptor layout before RADV gathers
 +     * shader info or declares user SGPR arguments. radv_postprocess_nir()
 +     * consumes stage.layout when lowering descriptors. */
++    struct radv_shader_layout layout = {0};
 +    struct radv_descriptor_set_layout* owned_set0 = NULL;
 +    PsbcResult resource_result =
-+        build_resource_layout(nir, &stage.layout, &owned_set0);
++        build_resource_layout(nir, &layout, &owned_set0);
 +    if (resource_result != PSBC_RESULT_OK) {
 +        psbc_shutdown();
 +        return resource_result;
 +    }
++    stage.layout = layout;
 +    stage.key.full_64bit_descriptor_set_ptrs = owned_set0 != NULL;
 +
      /* Shader info + args + postprocess */
@@ -223,7 +225,7 @@ diff --git a/libpsbc/psbc_compile.c b/libpsbc/psbc_compile.c
      /* Determine previous stage for shader args declaration.
       * HS/GS need previous_stage=VERTEX so that the merged-pipeline args
       * (prolog_inputs, vertex_buffers, etc.) are declared for the NIR
-@@ -1090,10 +1215,18 @@
+@@ -1090,10 +1216,18 @@
      );
  
      if (!binary) {
@@ -242,7 +244,7 @@ diff --git a/libpsbc/psbc_compile.c b/libpsbc/psbc_compile.c
      /* Extract code from radv_shader_binary_legacy */
      struct radv_shader_binary_legacy* legacy =
          (struct radv_shader_binary_legacy*)binary;
-@@ -1127,6 +1260,7 @@
+@@ -1127,6 +1261,7 @@
      out->size = output_size;
  
      free(binary);
@@ -250,7 +252,7 @@ diff --git a/libpsbc/psbc_compile.c b/libpsbc/psbc_compile.c
      psbc_shutdown();
  
      return result;
-@@ -1147,6 +1281,20 @@
+@@ -1147,6 +1282,20 @@
      case PSBC_RESULT_UNSUPPORTED_STAGE: return "unsupported shader stage";
      case PSBC_RESULT_COMPILE_NIR:      return "SPIR-V to NIR compilation failed";
      case PSBC_RESULT_COMPILE_ACO:      return "ACO shader compilation failed";
