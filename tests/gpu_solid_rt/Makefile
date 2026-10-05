@@ -7,8 +7,12 @@ PSBC := $(DEPS)/opengnm-psbc/opengnm-psbc
 BUILD := $(ROOT)/build/gpu_solid_rt
 OUT := $(ROOT)/out/gpu_solid_rt
 
-CC ?= clang
-LD ?= ld.lld
+ifeq ($(origin CC), default)
+CC := clang
+endif
+ifeq ($(origin LD), default)
+LD := ld.lld
+endif
 GLSLC ?= glslc
 
 ELF := $(OUT)/gpu_solid_rt.elf
