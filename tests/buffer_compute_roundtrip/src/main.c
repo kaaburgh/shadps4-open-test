@@ -73,6 +73,10 @@ static size_t align_up(size_t value, size_t alignment) {
     return (value + mask) & ~mask;
 }
 
+static inline void compiler_memory_barrier(void) {
+    __asm__ __volatile__("" ::: "memory");
+}
+
 static void emit_marker(const char* status, const char* detail) {
     char line[256];
     if (detail && detail[0]) {
@@ -365,7 +369,7 @@ static uint32_t expected_value(uint32_t i) {
     return (input_value(i) ^ CONST_A) + i * CONST_B;
 }
 
-static void fill_words(uint32_t* ptr, size_t bytes, uint32_t value) {
+static void fill_words(volatile uint32_t* ptr, size_t bytes, uint32_t value) {
     const size_t count = bytes / sizeof(uint32_t);
     for (size_t i = 0; i < count; ++i) {
         ptr[i] = value;
@@ -385,7 +389,7 @@ static GnmBuffer make_raw_buffer(void* base, uint32_t bytes) {
     return buffer;
 }
 
-static bool verify_guard(const uint32_t* guard, const char* name) {
+static bool verify_guard(const volatile uint32_t* guard, const char* name) {
     const size_t count = GUARD_BYTES / sizeof(uint32_t);
     for (size_t i = 0; i < count; ++i) {
         if (guard[i] != GUARD_VALUE) {
@@ -486,15 +490,16 @@ int main(void) {
         goto cleanup;
     }
 
-    uint32_t* guard0 = (uint32_t*)data;
-    uint32_t* input = (uint32_t*)(data + GUARD_BYTES);
-    uint32_t* guard1 =
-        (uint32_t*)(data + GUARD_BYTES + BUFFER_BYTES);
-    uint32_t* output =
-        (uint32_t*)(data + GUARD_BYTES + BUFFER_BYTES + GUARD_BYTES);
-    uint32_t* guard2 =
-        (uint32_t*)(data + GUARD_BYTES + BUFFER_BYTES + GUARD_BYTES +
-                    BUFFER_BYTES);
+    volatile uint32_t* guard0 = (volatile uint32_t*)data;
+    volatile uint32_t* input =
+        (volatile uint32_t*)(data + GUARD_BYTES);
+    volatile uint32_t* guard1 =
+        (volatile uint32_t*)(data + GUARD_BYTES + BUFFER_BYTES);
+    volatile uint32_t* output =
+        (volatile uint32_t*)(data + GUARD_BYTES + BUFFER_BYTES + GUARD_BYTES);
+    volatile uint32_t* guard2 =
+        (volatile uint32_t*)(data + GUARD_BYTES + BUFFER_BYTES + GUARD_BYTES +
+                            BUFFER_BYTES);
 
     fill_words(guard0, GUARD_BYTES, GUARD_VALUE);
     fill_words(guard1, GUARD_BYTES, GUARD_VALUE);
@@ -516,14 +521,20 @@ int main(void) {
         result = fail("descriptor_table");
         goto cleanup;
     }
-    descriptors[0] = make_raw_buffer(input, BUFFER_BYTES);
-    descriptors[1] = make_raw_buffer(output, BUFFER_BYTES);
+    descriptors[0] =
+        make_raw_buffer((void*)(uintptr_t)input, BUFFER_BYTES);
+    descriptors[1] =
+        make_raw_buffer((void*)(uintptr_t)output, BUFFER_BYTES);
+
+    compiler_memory_barrier();
 
     uint32_t dcb_bytes = 0;
     if (!submit_compute(&arena, &shader, descriptors, &dcb_bytes)) {
         result = fail(g_gnm_errors ? "opengnm_or_submit" : "compute_timeout");
         goto cleanup;
     }
+
+    compiler_memory_barrier();
 
     if (!verify_guard(guard0, "before_input") ||
         !verify_guard(guard1, "between_buffers") ||
