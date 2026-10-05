@@ -53,7 +53,7 @@ $(ELF): $(RAW_ELF) | $(OUT)
 
 $(RAW_ELF): $(OBJ) $(OPENGNM)/libopengnm.a | $(BUILD)
 	$(LD) -o "$@" "$(OBJ)" $(LDFLAGS) \
-		"$(OPENGNM)/libopengnm.a" -lc -lkernel -lSceGnmDriver \
+		"$(OPENGNM)/libopengnm.a" -lc -lkernel -lSceGnmDriver -lSceVideoOut \
 		"$(TOOLCHAIN)/lib/crt1.o" "$(TOOLCHAIN)/lib/crti.o" "$(TOOLCHAIN)/lib/crtn.o"
 
 $(COMP_SPV): assets/pingpong.comp.glsl | $(BUILD)
