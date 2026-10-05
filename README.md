@@ -83,7 +83,7 @@ Stage-0 build dependencies:
 
 - OpenOrbis PS4 Toolchain v0.5.4: guest compiler/sysroot/link/runtime inputs;
 - OpenGNM: GNM implementation/API, MIT;
-- opengnm-psbc: SPIR-V -> PS4 GFX7 shader compiler, MIT project with vendored Mesa code;
+- opengnm-psbc: SPIR-V -> PS4 GFX7 shader compiler, MIT project with vendored Mesa code; the pinned source is locally patched by [patches/opengnm-psbc/](patches/opengnm-psbc/) to provide the buffer-resource ABI documented in [docs/psbc-resource-abi.md](docs/psbc-resource-abi.md);
 - SPIRV-Headers and Vulkan-Headers: host-side psbc build inputs;
 - `glslc`: GLSL -> SPIR-V.
 
@@ -113,8 +113,35 @@ bash scripts/build-test.sh gpu_solid_rt
 ```
 
 `bootstrap-deps.sh` downloads the official OpenOrbis v0.5.4 Linux toolchain archive, verifies
-its published SHA-256, checks out the source dependencies at exact revisions, builds
-`opengnm-psbc`, and builds the OpenGNM Orbis static library under `.deps/`.
+its published SHA-256, checks out the source dependencies at exact revisions, applies the
+repository's ordered `patches/opengnm-psbc/*.patch` set, builds `opengnm-psbc`, and builds
+the OpenGNM Orbis static library under `.deps/`. The psbc patch set is SHA-256 stamped: an
+unchanged repeat bootstrap is a no-op for psbc, while a changed patch set resets the checkout
+to `OPENGNM_PSBC_SHA`, reapplies the patches and rebuilds it.
+
+The local psbc resource ABI supports set-0 UBO/SSBO buffer descriptors with a full 64-bit
+descriptor-table pointer. Unsupported descriptor/user-data forms fail compilation instead of
+silently lowering to a null descriptor. See
+[docs/psbc-resource-abi.md](docs/psbc-resource-abi.md) for the exact table and user-SGPR
+contract.
+
+### Verify the psbc resource ABI
+
+After bootstrap, the descriptor ABI can be checked without shadPS4:
+
+```bash
+python3 tooling/verify-psbc-resource-abi.py
+```
+
+The verifier compiles a small GFX7 SSBO compute shader, decodes the relevant Sea Islands SMRD
+and MUBUF words directly, verifies V# loads for bindings 0 and 1 at DWORD offsets 0 and 4 from
+the `PTR_INDIRECTRESOURCETABLE` SGPR pair, and checks that every MUBUF resource comes from
+those loads. It also verifies compile-time rejection of set 1, descriptor arrays and
+`gl_NumWorkGroups`.
+
+If an executable built from the unpatched pinned psbc revision is available, pass it as
+`--baseline-psbc /path/to/opengnm-psbc` to additionally require byte-identical output for the
+resource-free `gpu_solid_rt` vertex and fragment shaders.
 
 The expected guest output is:
 
