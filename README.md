@@ -117,7 +117,10 @@ its published SHA-256, checks out the source dependencies at exact revisions, ap
 repository's ordered `patches/opengnm-psbc/*.patch` set, builds `opengnm-psbc`, and builds
 the OpenGNM Orbis static library under `.deps/`. The psbc patch set is SHA-256 stamped: an
 unchanged repeat bootstrap is a no-op for psbc, while a changed patch set resets the checkout
-to `OPENGNM_PSBC_SHA`, reapplies the patches and rebuilds it.
+to `OPENGNM_PSBC_SHA`, reapplies the patches and rebuilds it. A patch that fails to apply
+stops the bootstrap before the stamp is written. Every bootstrap ends the psbc step by running
+the resource-ABI verifier below, so an unpatched or stale compiler fails there instead of in a
+guest test.
 
 The local psbc resource ABI supports set-0 UBO/SSBO buffer descriptors with a full 64-bit
 descriptor-table pointer. Unsupported descriptor/user-data forms fail compilation instead of
@@ -136,8 +139,9 @@ python3 tooling/verify-psbc-resource-abi.py
 The verifier compiles a small GFX7 SSBO compute shader, decodes the relevant Sea Islands SMRD
 and MUBUF words directly, verifies V# loads for bindings 0 and 1 at DWORD offsets 0 and 4 from
 the `PTR_INDIRECTRESOURCETABLE` SGPR pair, and checks that every MUBUF resource comes from
-those loads. It also verifies compile-time rejection of set 1, descriptor arrays and
-`gl_NumWorkGroups`.
+those loads, with no constant `s_mov` overwriting a loaded V#. It also verifies compile-time
+rejection of set 1, descriptor arrays and `gl_NumWorkGroups`. Run against the unpatched pinned
+psbc, it fails because no V# is loaded from the table.
 
 If an executable built from the unpatched pinned psbc revision is available, pass it as
 `--baseline-psbc /path/to/opengnm-psbc` to additionally require byte-identical output for the
