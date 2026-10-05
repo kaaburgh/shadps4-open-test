@@ -64,6 +64,10 @@ The repository scaffold, pinned dependency bootstrap, first guest test and host 
 implemented. The design and current upstream findings are recorded in
 [docs/research-2026-10-05.md](docs/research-2026-10-05.md).
 
+The planned progression from the current raster/readback baseline toward buffer coherence,
+page false-sharing and UMA-focused workloads is documented in
+[docs/memory-uma-test-roadmap.md](docs/memory-uma-test-roadmap.md).
+
 `gpu_solid_rt` has been built from a clean checkout and run on shadPS4 `dade3af` with Mesa
 lavapipe (CPU Vulkan) under Xvfb. It passes with no critical shadPS4 log lines once shadPS4
 carries [patches/shadps4/](patches/shadps4/) (see below); on stock `dade3af` the runner reports
