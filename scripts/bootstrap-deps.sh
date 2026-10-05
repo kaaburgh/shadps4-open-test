@@ -39,6 +39,55 @@ clone_at() {
     git -C "$dest" checkout -q --detach FETCH_HEAD
 }
 
+patchset_digest() {
+    local patchdir="$1"
+    local patches=("$patchdir"/*.patch)
+
+    if [[ ! -e "${patches[0]}" ]]; then
+        printf 'none'
+        return
+    fi
+
+    local digest rest
+    read -r digest rest < <(cat -- "${patches[@]}" | sha256sum)
+    printf '%s' "$digest"
+}
+
+# Sets PATCHSET_CHANGED=1 when the checkout was reset and repatched, 0 when the
+# stamp already matched. Call it as a plain command, not in $(...): errexit is
+# not inherited by command substitutions, so a failing `git apply` would be
+# ignored and the stamp written anyway.
+apply_patchset() {
+    local dest="$1"
+    local base_sha="$2"
+    local patchdir="$3"
+    local stamp="$dest/.shadps4-open-test-patch-stamp"
+    local digest expected
+    digest="$(patchset_digest "$patchdir")"
+    expected="$base_sha $digest"
+
+    if [[ -f "$stamp" ]] && [[ "$(<"$stamp")" == "$expected" ]]; then
+        PATCHSET_CHANGED=0
+        return
+    fi
+
+    # clone_at intentionally leaves a matching detached HEAD in place even
+    # when tracked files are patched. Reset only when the patch stamp changes,
+    # then rebuild from the pinned upstream tree.
+    git -C "$dest" reset -q --hard "$base_sha"
+    git -C "$dest" clean -q -fdx
+
+    local patch
+    for patch in "$patchdir"/*.patch; do
+        [[ -e "$patch" ]] || continue
+        git -C "$dest" apply --check "$patch"
+        git -C "$dest" apply "$patch"
+    done
+
+    printf '%s\n' "$expected" >"$stamp"
+    PATCHSET_CHANGED=1
+}
+
 install_openorbis() {
     local dest="$DEPS/openorbis"
     if [[ -f "$dest/link.x" ]]; then
@@ -83,7 +132,9 @@ clone_at "$OPENGNM_PSBC_REPO" "$OPENGNM_PSBC_SHA" "$DEPS/opengnm-psbc"
 clone_at "$SPIRV_HEADERS_REPO" "$SPIRV_HEADERS_SHA" "$DEPS/SPIRV-Headers"
 clone_at "$VULKAN_HEADERS_REPO" "$VULKAN_HEADERS_SHA" "$DEPS/Vulkan-Headers"
 
-if [[ ! -x "$DEPS/opengnm-psbc/opengnm-psbc" ]]; then
+apply_patchset "$DEPS/opengnm-psbc" "$OPENGNM_PSBC_SHA" "$ROOT/patches/opengnm-psbc"
+
+if [[ "$PATCHSET_CHANGED" == 1 ]] || [[ ! -x "$DEPS/opengnm-psbc/opengnm-psbc" ]]; then
     cp -- "$ROOT/tooling/opengnm-psbc-linux.mak" "$DEPS/opengnm-psbc/config.mak"
     # The upstream Makefile does not generate every Mesa codegen output it needs.
     bash "$ROOT/tooling/psbc-codegen.sh" "$DEPS/opengnm-psbc"
@@ -92,6 +143,10 @@ if [[ ! -x "$DEPS/opengnm-psbc/opengnm-psbc" ]]; then
     make -C "$DEPS/opengnm-psbc" generated
     make -C "$DEPS/opengnm-psbc" -j"$(nproc)"
 fi
+
+# Fail here rather than in a test if the built compiler does not provide the
+# buffer-resource ABI (for example, a stale or unpatched build).
+python3 "$ROOT/tooling/verify-psbc-resource-abi.py" --psbc "$DEPS/opengnm-psbc/opengnm-psbc" >/dev/null
 
 if [[ ! -f "$DEPS/opengnm/libopengnm.a" ]]; then
     cp -- "$DEPS/opengnm/config.orbis.mak" "$DEPS/opengnm/config.mak"

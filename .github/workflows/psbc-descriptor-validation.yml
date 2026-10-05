@@ -1,0 +1,87 @@
+name: psbc descriptor ABI validation
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  psbc-resource-abi:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install host build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld llvm glslc python3-mako
+
+      - name: Check out pinned psbc dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          source deps.lock
+          mkdir -p .deps
+          git clone -q https://github.com/PS4-OpenGNM/opengnm.git .deps/opengnm
+          git -C .deps/opengnm checkout -q --detach "$OPENGNM_SHA"
+          git clone -q https://github.com/PS4-OpenGNM/opengnm-psbc.git .deps/opengnm-psbc
+          git -C .deps/opengnm-psbc checkout -q --detach "$OPENGNM_PSBC_SHA"
+          git clone -q https://github.com/KhronosGroup/SPIRV-Headers.git .deps/SPIRV-Headers
+          git -C .deps/SPIRV-Headers checkout -q --detach "$SPIRV_HEADERS_SHA"
+          git clone -q https://github.com/KhronosGroup/Vulkan-Headers.git .deps/Vulkan-Headers
+          git -C .deps/Vulkan-Headers checkout -q --detach "$VULKAN_HEADERS_SHA"
+
+      - name: Build unpatched baseline psbc
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp tooling/opengnm-psbc-linux.mak .deps/opengnm-psbc/config.mak
+          bash tooling/psbc-codegen.sh .deps/opengnm-psbc
+          make -C .deps/opengnm-psbc generated
+          make -C .deps/opengnm-psbc -j"$(nproc)"
+          cp .deps/opengnm-psbc/opengnm-psbc /tmp/opengnm-psbc-baseline
+
+      - name: Apply patch and rebuild
+        shell: bash
+        run: |
+          set -euo pipefail
+          source deps.lock
+          git -C .deps/opengnm-psbc reset -q --hard "$OPENGNM_PSBC_SHA"
+          git -C .deps/opengnm-psbc clean -q -fdx
+          for patch in patches/opengnm-psbc/*.patch; do
+            git -C .deps/opengnm-psbc apply --check "$GITHUB_WORKSPACE/$patch"
+            git -C .deps/opengnm-psbc apply "$GITHUB_WORKSPACE/$patch"
+          done
+          cp tooling/opengnm-psbc-linux.mak .deps/opengnm-psbc/config.mak
+          bash tooling/psbc-codegen.sh .deps/opengnm-psbc
+          make -C .deps/opengnm-psbc generated
+          make -C .deps/opengnm-psbc -j"$(nproc)"
+
+      - name: Verify resource ABI and resource-free byte identity
+        run: |
+          python3 tooling/verify-psbc-resource-abi.py \
+            --baseline-psbc /tmp/opengnm-psbc-baseline
+
+      - name: Exercise bootstrap patch stamp
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .deps/openorbis
+          touch .deps/openorbis/link.x
+          touch .deps/opengnm/libopengnm.a
+          rm -f .deps/opengnm-psbc/.shadps4-open-test-patch-stamp
+
+          bash scripts/bootstrap-deps.sh
+
+          stamp_before="$(cat .deps/opengnm-psbc/.shadps4-open-test-patch-stamp)"
+          binary_before="$(sha256sum .deps/opengnm-psbc/opengnm-psbc)"
+          touch .deps/opengnm-psbc/.bootstrap-noop-sentinel
+
+          bash scripts/bootstrap-deps.sh
+
+          test -f .deps/opengnm-psbc/.bootstrap-noop-sentinel
+          test "$stamp_before" = "$(cat .deps/opengnm-psbc/.shadps4-open-test-patch-stamp)"
+          test "$binary_before" = "$(sha256sum .deps/opengnm-psbc/opengnm-psbc)"
+
+      - name: Check bootstrap shell syntax
+        run: bash -n scripts/bootstrap-deps.sh

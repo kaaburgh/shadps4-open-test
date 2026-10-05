@@ -7,7 +7,7 @@ checks them out or installs them under `.deps/` at revisions recorded in `deps.l
 |---|---|---|
 | OpenOrbis/OpenOrbis-PS4-Toolchain | PS4 compiler/sysroot/link/runtime inputs | GPL-3.0 project; bundled components have their own licenses |
 | PS4-OpenGNM/opengnm | GNM/GPA implementation | MIT-labelled; `src/hwinit_sequences.h`, built only into its host backend, is copied from GPL-2.0-or-later shadPS4 code |
-| PS4-OpenGNM/opengnm-psbc | SPIR-V -> PS4 GCN shader compiler | MIT project, with vendored Mesa code under upstream licenses |
+| PS4-OpenGNM/opengnm-psbc | SPIR-V -> PS4 GCN shader compiler; checked out at the pinned upstream revision and modified locally by `patches/opengnm-psbc/` | MIT project, with vendored Mesa code under upstream licenses; patched source files retain their upstream license headers |
 | KhronosGroup/SPIRV-Headers | psbc host-build dependency | Khronos permissive/MIT-style license |
 | KhronosGroup/Vulkan-Headers | psbc host-build dependency | Apache-2.0 |
 | PS4-OpenGNM/freegnm-examples | research/reference examples only; not a stage-0 dependency | MIT |
