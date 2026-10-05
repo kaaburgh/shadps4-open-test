@@ -1,0 +1,183 @@
+From 9596548c8aa44ea7b62f5941ce6b7012949876ff Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 5 Oct 2026 19:49:19 +0000
+Subject: [PATCH] buffer_cache: size sparse arenas within device buffer limits
+
+BufferCache backs guest buffers with sparse "arena" buffers of a fixed
+4 GiB (ARENA_PAGE_BITS = 32). A Vulkan buffer must not exceed
+maxBufferSize, and sparse buffers also have to fit in
+sparseAddressSpaceSize. Devices with smaller limits fail the first
+buffer bind: lavapipe reports maxBufferSize = 4 GiB - 1 and
+sparseAddressSpaceSize = 2 GiB, so creating the arena returns
+VK_ERROR_OUT_OF_DEVICE_MEMORY and the emulator aborts in
+BufferCache::GetArena.
+
+Pick the arena size at startup instead: the largest power of two that
+fits maxBufferSize and half of sparseAddressSpaceSize (room for two
+arenas, since a request may span an arena boundary), clamped to the
+previous 4 GiB maximum. Devices that already allowed 4 GiB arenas keep
+them; the address-space table becomes a vector sized from the chosen
+arena size.
+---
+ src/video_core/buffer_cache/buffer_cache.cpp | 43 ++++++++++++++------
+ src/video_core/buffer_cache/buffer_cache.h   |  9 ++--
+ src/video_core/renderer_vulkan/vk_instance.h | 10 +++++
+ 3 files changed, 45 insertions(+), 17 deletions(-)
+
+diff --git a/src/video_core/buffer_cache/buffer_cache.cpp b/src/video_core/buffer_cache/buffer_cache.cpp
+index ea290f5..192d324 100644
+--- a/src/video_core/buffer_cache/buffer_cache.cpp
++++ b/src/video_core/buffer_cache/buffer_cache.cpp
+@@ -55,10 +55,27 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
+       stream_buffer{instance, scheduler, MemoryType::Stream, STREAM_BUFFER_SIZE},
+       gds_buffer{instance, 0, GDS_BUFFER_SIZE, MemoryType::Stream, "GDS Buffer"},
+       memory_semaphore{instance} {
++    // Each arena is a sparse buffer, so its size must not exceed maxBufferSize and must fit in
++    // the device's sparse address space. Keep 4 GiB arenas where the device allows them and
++    // otherwise use the largest power of two that fits, leaving room for two arenas (a request
++    // may span an arena boundary). For example, lavapipe reports maxBufferSize = 4 GiB - 1 and
++    // sparseAddressSpaceSize = 2 GiB, so it gets 1 GiB arenas.
++    const u64 arena_limit =
++        std::min<u64>(instance.MaxBufferSize(), instance.SparseAddressSpaceSize() / 2);
++    arena_page_bits = std::clamp<u64>(std::bit_width(arena_limit) - 1, MIN_ARENA_PAGE_BITS,
++                                      MAX_ARENA_PAGE_BITS);
++    arena_page_size = u64{1} << arena_page_bits;
++    address_space.resize(u64{1} << (ADDRESS_SPACE_BITS - arena_page_bits));
++    if (arena_page_bits < MAX_ARENA_PAGE_BITS) {
++        LOG_INFO(Render, "Using {:#x}-byte sparse buffer arenas (maxBufferSize {:#x}, "
++                         "sparseAddressSpaceSize {:#x})",
++                 arena_page_size, instance.MaxBufferSize(), instance.SparseAddressSpaceSize());
++    }
++
+     const vk::BufferCreateInfo probe_ci = {
+         .flags =
+             vk::BufferCreateFlagBits::eSparseBinding | vk::BufferCreateFlagBits::eSparseResidency,
+-        .size = ARENA_PAGE_SIZE,
++        .size = arena_page_size,
+         .usage = ARENA_USAGE,
+         .sharingMode = vk::SharingMode::eExclusive,
+     };
+@@ -71,17 +88,17 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
+     ASSERT_MSG(std::popcount(block_size) == 1, "Sparse block size {} is not a power of 2",
+                block_size);
+     block_shift = std::bit_width(block_size) - 1;
+-    blocks_per_arena_page = ARENA_PAGE_SIZE / block_size;
+-    blocks_per_arena_page_shift = ARENA_PAGE_BITS - block_shift;
++    blocks_per_arena_page = arena_page_size / block_size;
++    blocks_per_arena_page_shift = arena_page_bits - block_shift;
+     arena_memory_type_index =
+         FindMemoryType(instance.GetMemoryProperties(), vk::MemoryPropertyFlagBits::eDeviceLocal,
+                        reqs.memoryTypeBits)
+             .value();
+ 
+     const u64 bda_pagetable_size =
+-        (blocks_per_arena_page * NUM_ARENA_PAGES) * sizeof(vk::DeviceAddress);
++        (blocks_per_arena_page * address_space.size()) * sizeof(vk::DeviceAddress);
+     fault_manager = std::make_unique<FaultManager>(instance, scheduler, *this, block_shift,
+-                                                   blocks_per_arena_page * NUM_ARENA_PAGES);
++                                                   blocks_per_arena_page * address_space.size());
+     bda_pagetable_buffer = std::make_unique<Buffer>(
+         instance, 0, bda_pagetable_size, MemoryType::DeviceLocal, "BDA Page Table Buffer");
+     runtime.FillBuffer(bda_pagetable_buffer.get(), 0u, bda_pagetable_size, 0u);
+@@ -209,7 +226,7 @@ bool BufferCache::IsRegionGpuModified(VAddr addr, size_t size) {
+ void BufferCache::SynchronizeDmaBuffers() {
+     fault_process_pending = true;
+     for (const auto& range : resident_ranges) {
+-        const u64 page = range.start >> (ARENA_PAGE_BITS - block_shift);
++        const u64 page = range.start >> (arena_page_bits - block_shift);
+         const VAddr device_addr = range.start << block_shift;
+         const u64 size = (range.end - range.start) << block_shift;
+         SynchronizeMemory(address_space[page], device_addr, size, false, false);
+@@ -230,7 +247,7 @@ const Buffer* BufferCache::GetArena(u64 first_block, u64 last_block) {
+             const u64 num_pages = last_page - first_page + 1;
+             const auto* new_arena =
+                 &arenas.emplace_back(instance, base_block << block_shift,
+-                                     num_pages << ARENA_PAGE_BITS, MemoryType::Sparse);
++                                     num_pages << arena_page_bits, MemoryType::Sparse);
+             address_space[first_page] = new_arena;
+             address_space[last_page] = new_arena;
+         }
+@@ -239,9 +256,9 @@ const Buffer* BufferCache::GetArena(u64 first_block, u64 last_block) {
+ 
+     LOG_WARNING(Render, "Migrating arena");
+ 
+-    const u64 first_addr = first_arena ? first_arena->cpu_addr : (first_page << ARENA_PAGE_BITS);
+-    const u64 first_size = first_arena ? first_arena->size_bytes : ARENA_PAGE_SIZE;
+-    const u64 last_size = last_arena ? last_arena->size_bytes : ARENA_PAGE_SIZE;
++    const u64 first_addr = first_arena ? first_arena->cpu_addr : (first_page << arena_page_bits);
++    const u64 first_size = first_arena ? first_arena->size_bytes : arena_page_size;
++    const u64 last_size = last_arena ? last_arena->size_bytes : arena_page_size;
+ 
+     const u64 base_block = first_addr >> block_shift;
+     const u64 total_size = first_size + last_size;
+@@ -259,12 +276,12 @@ const Buffer* BufferCache::GetArena(u64 first_block, u64 last_block) {
+         });
+     });
+ 
+-    u64 base_page = first_addr >> ARENA_PAGE_BITS;
+-    for (u32 page = 0; page < (first_size >> ARENA_PAGE_BITS); ++page) {
++    u64 base_page = first_addr >> arena_page_bits;
++    for (u32 page = 0; page < (first_size >> arena_page_bits); ++page) {
+         address_space[base_page + page] = new_arena;
+     }
+     base_page = last_page;
+-    for (u32 page = 0; page < (last_size >> ARENA_PAGE_BITS); ++page) {
++    for (u32 page = 0; page < (last_size >> arena_page_bits); ++page) {
+         address_space[base_page + page] = new_arena;
+     }
+     return new_arena;
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+index 7fe82e0..cdfca7e 100644
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -36,9 +36,8 @@ class PageManager;
+ 
+ class BufferCache {
+     static constexpr u64 ADDRESS_SPACE_BITS = 40;
+-    static constexpr u64 ARENA_PAGE_BITS = 32;
+-    static constexpr u64 ARENA_PAGE_SIZE = u64{1} << ARENA_PAGE_BITS;
+-    static constexpr u64 NUM_ARENA_PAGES = u64{1} << (ADDRESS_SPACE_BITS - ARENA_PAGE_BITS);
++    static constexpr u64 MAX_ARENA_PAGE_BITS = 32;
++    static constexpr u64 MIN_ARENA_PAGE_BITS = 24;
+     static constexpr u64 MIN_BLOCK_SIZE = 16_KB;
+     static constexpr u64 STREAM_THRESHOLD = 16_KB;
+ 
+@@ -143,7 +142,7 @@ private:
+     std::unique_ptr<Buffer> bda_pagetable_buffer;
+     bool fault_process_pending{};
+ 
+-    std::array<const Buffer*, NUM_ARENA_PAGES> address_space{};
++    std::vector<const Buffer*> address_space;
+     std::deque<Buffer> arenas;
+     std::vector<ArenaBinds> pending_binds;
+     Vulkan::Semaphore memory_semaphore;
+@@ -160,6 +159,8 @@ private:
+     };
+     IntervalList<Backing> resident_ranges;
+ 
++    u64 arena_page_bits{};
++    u64 arena_page_size{};
+     u32 arena_memory_type_index{};
+     u32 block_size{};
+     u32 block_shift{};
+diff --git a/src/video_core/renderer_vulkan/vk_instance.h b/src/video_core/renderer_vulkan/vk_instance.h
+index d4c4df7..b44aaba 100644
+--- a/src/video_core/renderer_vulkan/vk_instance.h
++++ b/src/video_core/renderer_vulkan/vk_instance.h
+@@ -316,6 +316,16 @@ public:
+         return properties.pipelineCacheUUID;
+     }
+ 
++    /// Returns the maximum size of a single buffer
++    vk::DeviceSize MaxBufferSize() const {
++        return vk13_props.maxBufferSize;
++    }
++
++    /// Returns the total virtual address space available for sparse resources
++    vk::DeviceSize SparseAddressSpaceSize() const {
++        return properties.limits.sparseAddressSpaceSize;
++    }
++
+     /// Returns the minimum required alignment for uniforms
+     vk::DeviceSize UniformMinAlignment() const {
+         return properties.limits.minUniformBufferOffsetAlignment;
