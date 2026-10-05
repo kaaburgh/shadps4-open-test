@@ -37,11 +37,11 @@ type; OpenGNM's sceGnmDrawCmdSetPointerUserData writes the two pointer
 dwords beginning at startregister.
 ---
  libpsbc/psbc_compile.c                        | 166 +++++++++++++++++-
- libpsbc/psbc_compile.h                        |   8 +
+ libpsbc/psbc_compile.h                        |  10 ++
  .../vulkan/nir/radv_nir_lower_descriptors.c   |  39 +++-
  src/amd/vulkan/radv_shader.h                  |   4 +-
  src/amd/vulkan/radv_shader_args.c             |  16 +-
- 5 files changed, 222 insertions(+), 11 deletions(-)
+ 5 files changed, 224 insertions(+), 11 deletions(-)
 
 diff --git a/libpsbc/psbc_compile.c b/libpsbc/psbc_compile.c
 index bacbc6a..1c097ae 100644
@@ -288,13 +288,15 @@ index bacbc6a..1c097ae 100644
      case PSBC_RESULT_INTERNAL_ERROR:   return "internal error";
      default:                           return "unknown error";
 diff --git a/libpsbc/psbc_compile.h b/libpsbc/psbc_compile.h
-index 000e7e1..f7c2323 100644
+index 000e7e1..f70c6e6 100644
 --- a/libpsbc/psbc_compile.h
 +++ b/libpsbc/psbc_compile.h
-@@ -47,6 +47,14 @@ typedef enum {
-     PSBC_RESULT_UNSUPPORTED_STAGE,
-     PSBC_RESULT_COMPILE_NIR,
+@@ -49,6 +49,16 @@ typedef enum {
      PSBC_RESULT_COMPILE_ACO,
+     PSBC_RESULT_OUT_OF_MEMORY,
+     PSBC_RESULT_INTERNAL_ERROR,
++    /* Standalone resource ABI rejections. Appended so the values above keep
++     * their numbers for existing libpsbc consumers. */
 +    PSBC_RESULT_UNSUPPORTED_DESCRIPTOR_SET,
 +    PSBC_RESULT_UNSUPPORTED_DESCRIPTOR_ARRAY,
 +    PSBC_RESULT_UNSUPPORTED_RESOURCE_TYPE,
@@ -303,9 +305,9 @@ index 000e7e1..f7c2323 100644
 +    PSBC_RESULT_UNSUPPORTED_NUM_WORKGROUPS,
 +    PSBC_RESULT_UNSUPPORTED_SCRATCH,
 +    PSBC_RESULT_UNSUPPORTED_USER_SGPRS,
-     PSBC_RESULT_OUT_OF_MEMORY,
-     PSBC_RESULT_INTERNAL_ERROR,
  } PsbcResult;
+ 
+ typedef struct {
 diff --git a/src/amd/vulkan/nir/radv_nir_lower_descriptors.c b/src/amd/vulkan/nir/radv_nir_lower_descriptors.c
 index 2412880..58352c0 100644
 --- a/src/amd/vulkan/nir/radv_nir_lower_descriptors.c
