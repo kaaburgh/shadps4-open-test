@@ -24,11 +24,14 @@ void main() {
 }
 """
 
+# Negative shaders use a 64-wide workgroup like the positive one: the pinned
+# psbc asserts in radv_nir_shader_info_pass() for GFX7 compute workgroups
+# smaller than one wave64, which would mask the resource-ABI diagnostic.
 NEGATIVE_SHADERS = {
     "set1": (
         r"""
 #version 450
-layout(local_size_x = 1) in;
+layout(local_size_x = 64) in;
 layout(std430, set = 1, binding = 0) buffer Out { uint dst[]; };
 void main() { dst[0] = 1u; }
 """,
@@ -37,7 +40,7 @@ void main() { dst[0] = 1u; }
     "descriptor-array": (
         r"""
 #version 450
-layout(local_size_x = 1) in;
+layout(local_size_x = 64) in;
 layout(std430, set = 0, binding = 0) buffer Out { uint value; } outbuf[2];
 void main() { outbuf[0].value = 1u; }
 """,
@@ -46,7 +49,7 @@ void main() { outbuf[0].value = 1u; }
     "num-workgroups": (
         r"""
 #version 450
-layout(local_size_x = 1) in;
+layout(local_size_x = 64) in;
 layout(std430, set = 0, binding = 0) buffer Out { uvec3 value; } outbuf;
 void main() { outbuf.value = gl_NumWorkGroups; }
 """,
@@ -164,6 +167,7 @@ def decode_and_verify(words: list[int], table_sgpr: int) -> None:
     # [31:27]=11000, op[26:22], sdst[21:15], sbase[14:9]*2,
     # imm[8], offset[7:0] (DWORDs).
     descriptor_loads: dict[int, int] = {}
+    table_load_pc: dict[int, int] = {}
     for pc, word in enumerate(words):
         if (word >> 27) != 0b11000:
             continue
@@ -180,6 +184,7 @@ def decode_and_verify(words: list[int], table_sgpr: int) -> None:
                     f"descriptor load at DWORD {pc} uses a register offset; expected immediate"
                 )
             descriptor_loads[sdst] = offset
+            table_load_pc[sdst] = pc
 
     offsets = set(descriptor_loads.values())
     if offsets != {0, 4}:
@@ -203,7 +208,6 @@ def decode_and_verify(words: list[int], table_sgpr: int) -> None:
             sdst, width = move
             constant_moves.append((pc, sdst, width))
 
-    table_load_pc = {load["sdst"]: load["word_index"] for load in table_loads}
     mubuf_count = 0
     used_offsets: set[int] = set()
     for pc in range(len(words) - 1):
