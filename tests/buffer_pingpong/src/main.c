@@ -75,6 +75,10 @@ static size_t align_up(size_t value, size_t alignment) {
     return (value + mask) & ~mask;
 }
 
+static inline void compiler_memory_barrier(void) {
+    __asm__ __volatile__("" ::: "memory");
+}
+
 static void emit_marker(const char* status, const char* detail) {
     char line[256];
     if (detail && detail[0]) {
@@ -368,7 +372,7 @@ static uint32_t expected_value(uint32_t generation, uint32_t i) {
     return (input_value(generation, i) ^ CONST_A) + i * CONST_B;
 }
 
-static void fill_words(uint32_t* ptr, size_t bytes, uint32_t value) {
+static void fill_words(volatile uint32_t* ptr, size_t bytes, uint32_t value) {
     const size_t count = bytes / sizeof(uint32_t);
     for (size_t i = 0; i < count; ++i) {
         ptr[i] = value;
@@ -384,7 +388,7 @@ static GnmBuffer make_raw_buffer(void* base, uint32_t bytes) {
     return buffer;
 }
 
-static bool verify_guard(const uint32_t* guard, const char* name,
+static bool verify_guard(const volatile uint32_t* guard, const char* name,
                          uint32_t generation) {
     const size_t count = GUARD_BYTES / sizeof(uint32_t);
     for (size_t i = 0; i < count; ++i) {
@@ -476,15 +480,16 @@ int main(void) {
         goto cleanup;
     }
 
-    uint32_t* guard0 = (uint32_t*)data;
-    uint32_t* buffer_a = (uint32_t*)(data + GUARD_BYTES);
-    uint32_t* guard1 =
-        (uint32_t*)(data + GUARD_BYTES + BUFFER_BYTES);
-    uint32_t* buffer_b =
-        (uint32_t*)(data + GUARD_BYTES + BUFFER_BYTES + GUARD_BYTES);
-    uint32_t* guard2 =
-        (uint32_t*)(data + GUARD_BYTES + BUFFER_BYTES + GUARD_BYTES +
-                    BUFFER_BYTES);
+    volatile uint32_t* guard0 = (volatile uint32_t*)data;
+    volatile uint32_t* buffer_a =
+        (volatile uint32_t*)(data + GUARD_BYTES);
+    volatile uint32_t* guard1 =
+        (volatile uint32_t*)(data + GUARD_BYTES + BUFFER_BYTES);
+    volatile uint32_t* buffer_b =
+        (volatile uint32_t*)(data + GUARD_BYTES + BUFFER_BYTES + GUARD_BYTES);
+    volatile uint32_t* guard2 =
+        (volatile uint32_t*)(data + GUARD_BYTES + BUFFER_BYTES + GUARD_BYTES +
+                            BUFFER_BYTES);
 
     fill_words(guard0, GUARD_BYTES, GUARD_VALUE);
     fill_words(guard1, GUARD_BYTES, GUARD_VALUE);
@@ -507,10 +512,14 @@ int main(void) {
 
     /* Prebuild both directions. The test loop switches only the table pointer;
      * it does not rewrite descriptors between generations. */
-    tables[0] = make_raw_buffer(buffer_a, BUFFER_BYTES);
-    tables[1] = make_raw_buffer(buffer_b, BUFFER_BYTES);
-    tables[2] = make_raw_buffer(buffer_b, BUFFER_BYTES);
-    tables[3] = make_raw_buffer(buffer_a, BUFFER_BYTES);
+    tables[0] =
+        make_raw_buffer((void*)(uintptr_t)buffer_a, BUFFER_BYTES);
+    tables[1] =
+        make_raw_buffer((void*)(uintptr_t)buffer_b, BUFFER_BYTES);
+    tables[2] =
+        make_raw_buffer((void*)(uintptr_t)buffer_b, BUFFER_BYTES);
+    tables[3] =
+        make_raw_buffer((void*)(uintptr_t)buffer_a, BUFFER_BYTES);
 
     void* cmd_memory = arena_alloc(&arena, COMMAND_BUFFER_SIZE, 256);
     volatile uint64_t* eop_labels =
@@ -528,8 +537,10 @@ int main(void) {
     uint32_t last_dcb_bytes = 0;
 
     for (uint32_t generation = 0; generation < GENERATIONS; ++generation) {
-        uint32_t* src = (generation & 1u) ? buffer_b : buffer_a;
-        uint32_t* dst = (generation & 1u) ? buffer_a : buffer_b;
+        volatile uint32_t* src =
+            (generation & 1u) ? buffer_b : buffer_a;
+        volatile uint32_t* dst =
+            (generation & 1u) ? buffer_a : buffer_b;
         GnmBuffer* table = (generation & 1u) ? &tables[2] : &tables[0];
 
         /* For generation > 0 this overwrites the buffer that the GPU wrote and
@@ -538,6 +549,8 @@ int main(void) {
         for (uint32_t i = 0; i < WORD_COUNT; ++i) {
             src[i] = input_value(generation, i);
         }
+
+        compiler_memory_barrier();
 
         const uint64_t eop_value = EOP_BASE + generation + 1;
         if (!submit_generation(
@@ -551,6 +564,8 @@ int main(void) {
             result = 1;
             goto cleanup;
         }
+
+        compiler_memory_barrier();
 
         if (!verify_guard(guard0, "before_a", generation) ||
             !verify_guard(guard1, "between_buffers", generation) ||
