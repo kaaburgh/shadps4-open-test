@@ -1,0 +1,42 @@
+From a64f33f5c9ac8ed55a87d8c302f33038891ef2f1 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 5 Oct 2026 14:24:55 +0000
+Subject: [PATCH] pm4: accept EVENT_WRITE_EOP INT_SEL=3 without raising an IRQ
+
+PM4CmdEventWriteEop::SignalFence hits UNREACHABLE for
+InterruptSelect::IrqUndocumented (INT_SEL=3), so a guest EOP with that
+selector aborts the emulator right after the data write.
+
+INT_SEL=3 is SEND_DATA_AFTER_WR_CONFIRM: the data write waits for write
+confirmation and no interrupt is sent (Mesa RADV documents it as "Wait
+for write confirmation before writing data, but don't send an
+interrupt"). The data write is already performed above, so accept the
+value as a no-IRQ case.
+
+OpenGNM's sceGnmDrawCmdEventWriteEop uses INT_SEL=3 for every
+non-discard label write, which made homebrew GNM workloads crash.
+PM4CmdReleaseMem::SignalFence currently treats 3 like an IRQ; that may
+be inaccurate too, but is left unchanged here.
+---
+ src/video_core/amdgpu/pm4_cmds.h | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/src/video_core/amdgpu/pm4_cmds.h b/src/video_core/amdgpu/pm4_cmds.h
+index f4a0702..0c2d260 100644
+--- a/src/video_core/amdgpu/pm4_cmds.h
++++ b/src/video_core/amdgpu/pm4_cmds.h
+@@ -504,6 +504,11 @@ struct PM4CmdEventWriteEop {
+             signal_irq();
+             break;
+         }
++        case InterruptSelect::IrqUndocumented: {
++            // INT_SEL=3 (SEND_DATA_AFTER_WR_CONFIRM): the data is written after
++            // write confirmation (done above) and no interrupt is sent.
++            break;
++        }
+         default: {
+             UNREACHABLE();
+         }
+-- 
+2.43.0
+

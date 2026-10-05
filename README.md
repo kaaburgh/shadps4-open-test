@@ -145,12 +145,14 @@ cmake --build build --parallel "$(nproc)"
 See the upstream Linux build document for the full distro package list.
 
 Why the patch: OpenGNM's `sceGnmDrawCmdEventWriteEop` emits `EVENT_WRITE_EOP` with
-`INT_SEL=3` (`SEND_DATA_ON_CONFIRM`). shadPS4 `dade3af` already accepts that selector in
-`RELEASE_MEM`, but its `EVENT_WRITE_EOP` handler reaches `UNREACHABLE` and the emulator aborts
-right after the label write, so a polling test could print PASS while shadPS4 crashes (the
-runner now rejects that). The patch makes `EVENT_WRITE_EOP` follow shadPS4's existing
-`RELEASE_MEM` handling. Whether selector 3 raises an interrupt on real hardware is not
-established; the guest packet is left as OpenGNM emits it rather than adapted to the emulator.
+`INT_SEL=3` (`SEND_DATA_AFTER_WR_CONFIRM`): write the data after write confirmation and send
+no interrupt (Mesa RADV documents it as "Wait for write confirmation before writing data, but
+don't send an interrupt"). shadPS4 `dade3af`'s `EVENT_WRITE_EOP` handler reaches `UNREACHABLE`
+for that selector and the emulator aborts right after the label write, so a polling test
+could print PASS while shadPS4 crashes (the runner now rejects that). The patch accepts
+selector 3 as a no-interrupt case. It deliberately does not copy shadPS4's `RELEASE_MEM`
+handling, which treats 3 like an interrupt request. The guest packet is left as OpenGNM emits
+it rather than adapted to the emulator.
 
 ## Run
 
