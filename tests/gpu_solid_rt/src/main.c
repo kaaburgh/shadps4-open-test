@@ -197,6 +197,7 @@ static bool load_shader(GpuArena* arena, const char* path,
     }
 
     size_t shader_offset = 0;
+    bool wrapped_container = false;
     if (file_size < sizeof(GnmShaderFileHeader)) {
         free(file);
         return false;
@@ -214,6 +215,7 @@ static bool load_shader(GpuArena* arena, const char* path,
             return false;
         }
         shader_offset = 0x24;
+        wrapped_container = true;
     }
 
     if ((GnmShaderType)header->type != expected_type) {
@@ -256,7 +258,25 @@ static bool load_shader(GpuArena* arena, const char* path,
         return false;
     }
 
-    const uint32_t code_size = sceGnmShaderCommonCodeSize(common);
+    uint32_t code_size = sceGnmShaderCommonCodeSize(common);
+    if (wrapped_container) {
+        uint32_t container_code_size = 0;
+        if (file_size < 0x14) {
+            free(file);
+            return false;
+        }
+        memcpy(&container_code_size, file + 0x10, sizeof(container_code_size));
+        if (container_code_size < sizeof(GnmShaderBinaryInfo) ||
+            shader_offset + container_code_size > file_size) {
+            free(file);
+            return false;
+        }
+        const GnmShaderBinaryInfo* binary_info =
+            (const GnmShaderBinaryInfo*)(shader_base + container_code_size -
+                                         sizeof(GnmShaderBinaryInfo));
+        code_size = binary_info->length;
+    }
+
     if (!range_inside(shader_base, shader_size, code_src, code_size)) {
         free(file);
         return false;
