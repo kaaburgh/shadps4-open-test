@@ -1,0 +1,34 @@
+name: guest workload build validation
+
+on:
+  pull_request:
+    paths:
+      - "tests/**"
+      - "scripts/build-test.sh"
+      - "scripts/bootstrap-deps.sh"
+      - "deps.lock"
+      - "patches/opengnm-psbc/**"
+      - "tooling/**"
+      - ".github/workflows/guest-build-validation.yml"
+  workflow_dispatch:
+
+jobs:
+  guest-build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git curl ca-certificates make clang lld llvm glslc \
+            python3 python3-mako
+
+      - name: Bootstrap pinned dependencies
+        run: bash scripts/bootstrap-deps.sh
+
+      - name: Build every guest workload in this checkout
+        run: |
+          for makefile in tests/*/Makefile; do
+            bash scripts/build-test.sh "$(basename "$(dirname "$makefile")")"
+          done

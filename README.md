@@ -227,6 +227,9 @@ SHADPS4=/path/to/shadPS4/build/shadps4 \
 ```
 
 This starts a private Xvfb, selects the lavapipe Vulkan ICD and runs the same host runner.
+Xvfb picks a free display (set `XVFB_DISPLAY=:N` to pin one) and reports it once it accepts
+connections; the script waits for Xvfb to exit afterwards, so runs can be started back to back.
+If Xvfb does not start, the script exits 2 (infrastructure failure).
 
 ## Why raw ELF
 
@@ -272,6 +275,23 @@ SHADTEST name=<test> status=FAIL reason=<reason> ...
 
 The marker may be mirrored through more than one guest logging path; the host treats the first
 matching terminal marker as authoritative.
+
+## Adding a test
+
+`scripts/build-test.sh <name>` builds `tests/<name>/Makefile`, and CI builds every test
+directory that has a `Makefile`, so a new test needs no script or workflow edits.
+
+Compute/buffer tests can share two files in [tests/common/](tests/common/):
+
+- `guest.mk`: build rules. The test's Makefile sets `TEST` and `COMPUTE_SHADERS` and includes
+  it. `src/main.c` becomes `out/<name>/<name>.elf`, and each `assets/<shader>.comp.glsl` becomes
+  `out/<name>/assets/<shader>.comp.sb`.
+- `shadtest_guest.h`: header-only guest helpers. They provide:
+  - the result marker;
+  - a CPU+GPU read-write Garlic direct-memory arena;
+  - compute shader loading;
+  - raw-buffer V#s for the [psbc resource ABI](docs/psbc-resource-abi.md);
+  - one dispatch per submission, waiting on a fresh end-of-pipe label value.
 
 Future tests should remain small and independent. When a bug is first found in a commercial
 game, the preferred long-term regression artifact is a minimized open guest reproducer rather
