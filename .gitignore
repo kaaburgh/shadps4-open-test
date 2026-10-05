@@ -1,0 +1,6 @@
+.deps/
+build/
+out/
+*.log
+tests/*/assets/*.spv
+tests/*/assets/*.sb
