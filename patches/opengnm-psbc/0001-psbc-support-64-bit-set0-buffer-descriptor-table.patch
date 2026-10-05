@@ -369,7 +369,7 @@ diff --git a/src/amd/vulkan/nir/radv_nir_lower_descriptors.c b/src/amd/vulkan/ni
  get_dynamic_descriptors_offset(nir_builder *b, lower_descriptors_state *state, uint32_t desc_set, uint32_t binding)
  {
     struct radv_descriptor_set_layout *layout = state->layout->set[desc_set].layout;
-@@ -240,7 +253,10 @@
+@@ -240,7 +253,13 @@
     if (access & ACCESS_NON_UNIFORM)
        return nir_iadd(b, nir_channel(b, rsrc, 0), nir_channel(b, rsrc, 1));
  
@@ -384,7 +384,7 @@ diff --git a/src/amd/vulkan/nir/radv_nir_lower_descriptors.c b/src/amd/vulkan/ni
     return ac_nir_load_smem(b, 4, desc_set, nir_channel(b, rsrc, 1), 4, 0);
  }
  
-@@ -248,15 +264,20 @@
+@@ -248,15 +264,19 @@
  visit_ssbo_descriptor_amd(nir_builder *b, lower_descriptors_state *state, nir_intrinsic_instr *intrin)
  {
     nir_def *rsrc = intrin->src[0].ssa;
