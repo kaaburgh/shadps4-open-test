@@ -65,15 +65,19 @@ def run(cmd: list[str], *, expect_ok: bool = True) -> subprocess.CompletedProces
     return proc
 
 
-def compile_spirv(glslc: str, source: pathlib.Path, output: pathlib.Path, stage: str) -> None:
-    run([
-        glslc,
-        f"-fshader-stage={stage}",
-        "--target-env=vulkan1.1",
-        str(source),
-        "-o",
-        str(output),
-    ])
+def compile_spirv(
+    glslc: str,
+    source: pathlib.Path,
+    output: pathlib.Path,
+    stage: str,
+    *,
+    vulkan11: bool = True,
+) -> None:
+    cmd = [glslc, f"-fshader-stage={stage}"]
+    if vulkan11:
+        cmd.append("--target-env=vulkan1.1")
+    cmd.extend([str(source), "-o", str(output)])
+    run(cmd)
 
 
 def compile_psbc(psbc: str, spirv: pathlib.Path, output: pathlib.Path, stage: str) -> subprocess.CompletedProcess[str]:
@@ -245,7 +249,9 @@ def compile_resource_free(
 ) -> bytes:
     spirv = tmp / f"{tag}.{stage}.spv"
     sb = tmp / f"{tag}.{stage}.sb"
-    compile_spirv(glslc, source, spirv, stage)
+    # Match tests/gpu_solid_rt/Makefile exactly: its glslc rules do not pass
+    # an explicit --target-env.
+    compile_spirv(glslc, source, spirv, stage, vulkan11=False)
     proc = compile_psbc(psbc, spirv, sb, stage)
     if proc.returncode != 0:
         raise RuntimeError(f"{tag} {stage} compile failed\n{proc.stderr}")
