@@ -168,7 +168,7 @@ diff --git a/libpsbc/psbc_compile.c b/libpsbc/psbc_compile.c
          };
          memcpy(buf + offset, &s, sizeof(s));
          offset += sizeof(s);
-@@ -1019,20 +1110,53 @@
+@@ -1019,20 +1110,54 @@
      nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
      radv_nir_lower_io(nir);
  
@@ -194,8 +194,7 @@ diff --git a/libpsbc/psbc_compile.c b/libpsbc/psbc_compile.c
      gfx_state.ps.has_epilog = false;
  
      radv_nir_shader_info_pass(
--        &compiler_info, nir, &layout, &stage.key, &gfx_state,
-+        &compiler_info, nir, &stage.layout, &stage.key, &gfx_state,
+         &compiler_info, nir, &layout, &stage.key, &gfx_state,
          RADV_PIPELINE_GRAPHICS, false, &stage.info
      );
  
@@ -224,7 +223,7 @@ diff --git a/libpsbc/psbc_compile.c b/libpsbc/psbc_compile.c
      /* Determine previous stage for shader args declaration.
       * HS/GS need previous_stage=VERTEX so that the merged-pipeline args
       * (prolog_inputs, vertex_buffers, etc.) are declared for the NIR
-@@ -1090,10 +1214,18 @@
+@@ -1090,10 +1215,18 @@
      );
  
      if (!binary) {
@@ -243,7 +242,7 @@ diff --git a/libpsbc/psbc_compile.c b/libpsbc/psbc_compile.c
      /* Extract code from radv_shader_binary_legacy */
      struct radv_shader_binary_legacy* legacy =
          (struct radv_shader_binary_legacy*)binary;
-@@ -1127,6 +1259,7 @@
+@@ -1127,6 +1260,7 @@
      out->size = output_size;
  
      free(binary);
@@ -251,7 +250,7 @@ diff --git a/libpsbc/psbc_compile.c b/libpsbc/psbc_compile.c
      psbc_shutdown();
  
      return result;
-@@ -1147,6 +1280,20 @@
+@@ -1147,6 +1281,20 @@
      case PSBC_RESULT_UNSUPPORTED_STAGE: return "unsupported shader stage";
      case PSBC_RESULT_COMPILE_NIR:      return "SPIR-V to NIR compilation failed";
      case PSBC_RESULT_COMPILE_ACO:      return "ACO shader compilation failed";
