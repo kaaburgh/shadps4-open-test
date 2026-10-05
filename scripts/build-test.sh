@@ -8,6 +8,9 @@ case "$TEST" in
     gpu_solid_rt)
         make -C "$ROOT/tests/gpu_solid_rt" all
         ;;
+    buffer_pingpong)
+        make -C "$ROOT/tests/buffer_pingpong" all
+        ;;
     *)
         printf 'unknown test: %s\n' "$TEST" >&2
         exit 2
