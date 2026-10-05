@@ -48,12 +48,11 @@ enum {
 };
 
 static const char* const TEST_NAME = "buffer_pingpong";
-static const uint32_t BASE_SEED = 0x2468ace1u;
-static const uint32_t OUTPUT_POISON = 0xcdcdcdcdu;
+static const uint32_t STATE_SEED = 0x2468ace1u;
+static const uint32_t INPUT_SEED = 0x13579bdeu;
+static const uint32_t INPUT_POISON = 0xcdcdcdcdu;
 static const uint32_t GUARD_VALUE = 0x5a17c3e9u;
-static const uint32_t CONST_A = 0xa5a5a5a5u;
-static const uint32_t CONST_B = 0x9e3779b1u;
-static const uint32_t GENERATION_MIX = 0x7f4a7c15u;
+static const uint32_t GENERATION_MIX = 0x10203040u;
 static const uint64_t EOP_BASE = 0x50494e47504f4e47ULL; /* "PINGPONG" */
 
 typedef struct {
@@ -363,13 +362,30 @@ static void unload_compute_shader(LoadedComputeShader* shader) {
     memset(shader, 0, sizeof(*shader));
 }
 
-static uint32_t input_value(uint32_t generation, uint32_t i) {
-    return BASE_SEED ^ (generation * GENERATION_MIX) ^
-           (i * 0x45d9f3bu) ^ (i << 16) ^ (i >> 3);
+static uint32_t initial_state_value(uint32_t i) {
+    return STATE_SEED ^ (i * 0x9e3779b1u) ^ (i << 11) ^ (i >> 5);
 }
 
-static uint32_t expected_value(uint32_t generation, uint32_t i) {
-    return (input_value(generation, i) ^ CONST_A) + i * CONST_B;
+static uint32_t input_value(uint32_t generation, uint32_t i) {
+    return INPUT_SEED + i * 0x045d9f3bu + generation * GENERATION_MIX;
+}
+
+static uint32_t next_state_value(uint32_t previous, uint32_t input,
+                                 uint32_t i) {
+    /*
+     * The increment is always odd: (input | 1) is odd and i*2 is even.
+     * Therefore every generation must change every state word, so a missed
+     * GPU store cannot accidentally equal the previous generation.
+     */
+    return previous + (input | 1u) + i * 2u;
+}
+
+static uint32_t expected_state_value(uint32_t generation, uint32_t i) {
+    uint32_t value = initial_state_value(i);
+    for (uint32_t n = 1; n <= generation; ++n) {
+        value = next_state_value(value, input_value(n, i), i);
+    }
+    return value;
 }
 
 static void fill_words(volatile uint32_t* ptr, size_t bytes, uint32_t value) {
@@ -481,11 +497,11 @@ int main(void) {
     }
 
     volatile uint32_t* guard0 = (volatile uint32_t*)data;
-    volatile uint32_t* buffer_a =
+    volatile uint32_t* state_a =
         (volatile uint32_t*)(data + GUARD_BYTES);
     volatile uint32_t* guard1 =
         (volatile uint32_t*)(data + GUARD_BYTES + BUFFER_BYTES);
-    volatile uint32_t* buffer_b =
+    volatile uint32_t* cpu_b =
         (volatile uint32_t*)(data + GUARD_BYTES + BUFFER_BYTES + GUARD_BYTES);
     volatile uint32_t* guard2 =
         (volatile uint32_t*)(data + GUARD_BYTES + BUFFER_BYTES + GUARD_BYTES +
@@ -494,8 +510,10 @@ int main(void) {
     fill_words(guard0, GUARD_BYTES, GUARD_VALUE);
     fill_words(guard1, GUARD_BYTES, GUARD_VALUE);
     fill_words(guard2, GUARD_BYTES, GUARD_VALUE);
-    fill_words(buffer_a, BUFFER_BYTES, OUTPUT_POISON);
-    fill_words(buffer_b, BUFFER_BYTES, OUTPUT_POISON);
+    for (uint32_t i = 0; i < WORD_COUNT; ++i) {
+        state_a[i] = initial_state_value(i);
+        cpu_b[i] = INPUT_POISON;
+    }
 
     if (!load_compute_shader(&arena, "/app0/assets/pingpong.comp.sb",
                              &shader)) {
@@ -503,23 +521,19 @@ int main(void) {
         goto cleanup;
     }
 
-    GnmBuffer* tables =
-        (GnmBuffer*)arena_alloc(&arena, 4 * sizeof(GnmBuffer), 16);
-    if (!tables) {
-        result = fail("descriptor_tables");
+    GnmBuffer* descriptors =
+        (GnmBuffer*)arena_alloc(&arena, 2 * sizeof(GnmBuffer), 16);
+    if (!descriptors) {
+        result = fail("descriptor_table");
         goto cleanup;
     }
 
-    /* Prebuild both directions. The test loop switches only the table pointer;
-     * it does not rewrite descriptors between generations. */
-    tables[0] =
-        make_raw_buffer((void*)(uintptr_t)buffer_a, BUFFER_BYTES);
-    tables[1] =
-        make_raw_buffer((void*)(uintptr_t)buffer_b, BUFFER_BYTES);
-    tables[2] =
-        make_raw_buffer((void*)(uintptr_t)buffer_b, BUFFER_BYTES);
-    tables[3] =
-        make_raw_buffer((void*)(uintptr_t)buffer_a, BUFFER_BYTES);
+    /* Binding 0 is GPU read/write state A. Binding 1 is CPU-written input B.
+     * The table itself is immutable across all generations. */
+    descriptors[0] =
+        make_raw_buffer((void*)(uintptr_t)state_a, BUFFER_BYTES);
+    descriptors[1] =
+        make_raw_buffer((void*)(uintptr_t)cpu_b, BUFFER_BYTES);
 
     void* cmd_memory = arena_alloc(&arena, COMMAND_BUFFER_SIZE, 256);
     volatile uint64_t* eop_labels =
@@ -536,25 +550,27 @@ int main(void) {
     uint32_t checksum = 2166136261u;
     uint32_t last_dcb_bytes = 0;
 
-    for (uint32_t generation = 0; generation < GENERATIONS; ++generation) {
-        volatile uint32_t* src =
-            (generation & 1u) ? buffer_b : buffer_a;
-        volatile uint32_t* dst =
-            (generation & 1u) ? buffer_a : buffer_b;
-        GnmBuffer* table = (generation & 1u) ? &tables[2] : &tables[0];
-
-        /* For generation > 0 this overwrites the buffer that the GPU wrote and
-         * the CPU verified in the previous generation. The next dispatch then
-         * consumes those fresh CPU bytes from the same backing allocation. */
+    for (uint32_t generation = 1; generation <= GENERATIONS; ++generation) {
+        /*
+         * Stage-4 invariant:
+         *   CPU writes B(n)
+         *   GPU consumes A(n-1) + B(n) and writes A(n)
+         *   completion
+         *   CPU validates A(n)
+         *
+         * A and B occupy separate page-aligned 64 KiB regions, so this stage
+         * repeats ownership/visibility handoffs without adding the same-page
+         * false-sharing interaction from Stage 3.
+         */
         for (uint32_t i = 0; i < WORD_COUNT; ++i) {
-            src[i] = input_value(generation, i);
+            cpu_b[i] = input_value(generation, i);
         }
 
         compiler_memory_barrier();
 
-        const uint64_t eop_value = EOP_BASE + generation + 1;
+        const uint64_t eop_value = EOP_BASE + generation;
         if (!submit_generation(
-                cmd_memory, &shader, table, &eop_labels[generation],
+                cmd_memory, &shader, descriptors, &eop_labels[generation - 1],
                 eop_value, &last_dcb_bytes)) {
             char detail[192];
             snprintf(detail, sizeof(detail),
@@ -568,19 +584,19 @@ int main(void) {
         compiler_memory_barrier();
 
         if (!verify_guard(guard0, "before_a", generation) ||
-            !verify_guard(guard1, "between_buffers", generation) ||
+            !verify_guard(guard1, "between_parts", generation) ||
             !verify_guard(guard2, "after_b", generation)) {
             result = 1;
             goto cleanup;
         }
 
         for (uint32_t i = 0; i < WORD_COUNT; ++i) {
-            const uint32_t expected_src = input_value(generation, i);
-            if (src[i] != expected_src) {
+            const uint32_t expected_b = input_value(generation, i);
+            if (cpu_b[i] != expected_b) {
                 char detail[208];
                 snprintf(detail, sizeof(detail),
-                         "reason=source_modified generation=%u index=%u got=%08x expected=%08x",
-                         generation, i, src[i], expected_src);
+                         "reason=input_modified generation=%u index=%u got=%08x expected=%08x",
+                         generation, i, cpu_b[i], expected_b);
                 emit_marker("FAIL", detail);
                 result = 1;
                 goto cleanup;
@@ -588,12 +604,12 @@ int main(void) {
         }
 
         for (uint32_t i = 0; i < WORD_COUNT; ++i) {
-            const uint32_t expected = expected_value(generation, i);
-            const uint32_t got = dst[i];
+            const uint32_t expected = expected_state_value(generation, i);
+            const uint32_t got = state_a[i];
             if (got != expected) {
                 char detail[224];
                 snprintf(detail, sizeof(detail),
-                         "reason=destination_mismatch generation=%u index=%u got=%08x expected=%08x",
+                         "reason=state_mismatch generation=%u index=%u got=%08x expected=%08x",
                          generation, i, got, expected);
                 emit_marker("FAIL", detail);
                 result = 1;
@@ -604,10 +620,13 @@ int main(void) {
         }
     }
 
+
+
+    {
     {
         char detail[208];
         snprintf(detail, sizeof(detail),
-                 "generations=%u words=%u bytes=%u handoffs=%u checksum=%08x dcb_bytes=%u",
+                 "generations=%u words=%u bytes_per_part=%u handoffs=%u checksum=%08x dcb_bytes=%u",
                  GENERATIONS, WORD_COUNT, BUFFER_BYTES,
                  GENERATIONS * 2, checksum, last_dcb_bytes);
         emit_marker("PASS", detail);
