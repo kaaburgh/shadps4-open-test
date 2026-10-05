@@ -39,7 +39,7 @@ void main() { dst[0] = 1u; }
 #version 450
 layout(local_size_x = 1) in;
 layout(std430, set = 0, binding = 0) buffer Out { uint value; } outbuf[2];
-void main() { outbuf[gl_GlobalInvocationID.x & 1u].value = 1u; }
+void main() { outbuf[0].value = 1u; }
 """,
         "descriptor arrays",
     ),
