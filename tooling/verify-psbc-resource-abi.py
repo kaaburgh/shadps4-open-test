@@ -165,12 +165,19 @@ def decode_and_verify(words: list[int], table_sgpr: int) -> None:
             f"expected set-0 V# loads at DWORD offsets {{0, 4}}, got {sorted(offsets)}"
         )
 
-    # MUBUF: dword0 [31:26]=111000; dword1 srsrc[20:16]*4.
+    # MUBUF: dword0 [31:26]=111000, op[24:18]; dword1 srsrc[20:16]*4.
+    # The positive shader uses GFX7 buffer_load_dword (0x0c) and
+    # buffer_store_dword (0x1c). Restricting the scan to those opcodes avoids
+    # treating literal/extension DWORDs from unrelated 64-bit instructions as
+    # MUBUF headers.
     mubuf_count = 0
     used_offsets: set[int] = set()
     for pc in range(len(words) - 1):
         word0 = words[pc]
         if (word0 >> 26) != 0b111000:
+            continue
+        op = (word0 >> 18) & 0x7F
+        if op not in {0x0C, 0x1C}:
             continue
         word1 = words[pc + 1]
         srsrc = ((word1 >> 16) & 0x1F) * 4
