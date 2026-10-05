@@ -1,27 +1,38 @@
 # Third-party components
 
-This repository does not vendor the dependencies below in git. The bootstrap script checks
-them out under `.deps/` at revisions recorded in `deps.lock`.
+This repository does not vendor its stage-0 build dependencies in git. The bootstrap script
+checks them out or installs them under `.deps/` at revisions recorded in `deps.lock`.
 
 | Component | Role | License / status |
 |---|---|---|
-| OpenOrbis/OpenOrbis-PS4-Toolchain | PS4 compiler/sysroot/link stubs/static libc | GPL-3.0 project; bundled components have their own licenses |
+| OpenOrbis/OpenOrbis-PS4-Toolchain | PS4 compiler/sysroot/link/runtime inputs | GPL-3.0 project; bundled components have their own licenses |
 | PS4-OpenGNM/opengnm | clean/open GNM/GPA implementation | MIT |
 | PS4-OpenGNM/opengnm-psbc | SPIR-V -> PS4 GCN shader compiler | MIT project, with vendored Mesa code under upstream licenses |
-| PS4-OpenGNM/freegnm-examples | small shared support layer used by prototype | MIT |
-| lateleite/freegnm, C branch | legacy source-only GNM/GNF/PSSL compatibility headers used by examples | MIT |
-| KhronosGroup/SPIRV-Headers | psbc build dependency | MIT-style Khronos license |
-| KhronosGroup/Vulkan-Headers | psbc build dependency | Apache-2.0 |
+| KhronosGroup/SPIRV-Headers | psbc host-build dependency | Khronos permissive/MIT-style license |
+| KhronosGroup/Vulkan-Headers | psbc host-build dependency | Apache-2.0 |
+| PS4-OpenGNM/freegnm-examples | research/reference examples only; not a stage-0 dependency | MIT |
 
 ## Explicitly excluded
 
 Do not add any of the following to this repository:
 
 - Sony SDK headers/libraries obtained from an official SDK;
-- extracted Sony PRX/sysmodules;
+- Sony PRX/sysmodules extracted from a console, SDK or commercial title;
 - commercial game executables, shaders, textures or other assets;
 - keys, licenses, RIFs or decrypted game content.
 
-The raw-ELF shadPS4 path is deliberately preferred because it does not require the
-`sce_module/libc.prx` and `sce_module/libSceFios2.prx` files that OpenOrbis PKG examples
-normally copy into installable homebrew packages.
+OpenOrbis PKG examples commonly contain `sce_module/libc.prx` and
+`sce_module/libSceFios2.prx`. Current OpenOrbis source includes buildable stub/empty modules
+with those names; they should not be confused with extracted proprietary Sony binaries.
+
+The stage-0 shadPS4 workflow nevertheless uses a raw ELF because it removes package construction
+and these package support modules entirely.
+
+## Generated artifacts
+
+The GLSL, SPIR-V and PS4 shader binaries produced from source authored in this repository do not
+depend on commercial game material.
+
+Before publishing a prebuilt guest ELF as a release artifact, perform one explicit audit of the
+licenses/notices for every statically linked OpenOrbis runtime object. Until then, source plus a
+reproducible build is the canonical distribution.
