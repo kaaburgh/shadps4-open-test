@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 import re
@@ -10,6 +11,7 @@ import subprocess
 import sys
 import time
 
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 MARKER = re.compile(r"SHADTEST\s+name=(?P<name>\S+)\s+status=(?P<status>PASS|FAIL)\b(?P<detail>.*)")
 
 
@@ -17,14 +19,27 @@ def write_isolated_config(root: Path) -> Path:
     """Create the minimal host config required by the pixel-readback oracle."""
     user_dir = root / "shadPS4"
     user_dir.mkdir(parents=True, exist_ok=True)
-    config = user_dir / "config.toml"
+    # On a fresh user dir shadPS4 creates home/1000 and unconditionally shows a
+    # modal "Save Migration" SDL dialog (even with nothing to migrate), which
+    # blocks unattended runs. Pre-creating the default user's home skips it.
+    for sub in ("savedata", "trophy", "inputs"):
+        (user_dir / "home" / "1000" / sub).mkdir(parents=True, exist_ok=True)
+    # Current shadPS4 reads config.json. A lone legacy config.toml makes it pop a
+    # modal "Config Migration" SDL dialog, which hangs an unattended run.
+    config = user_dir / "config.json"
     config.write_text(
-        "[GPU]\n"
-        "# Stage-0 oracle reads a GPU-written linear RT from guest CPU memory.\n"
-        "# These settings make that readback requirement explicit instead of\n"
-        "# accidentally depending on a developer's global shadPS4 config.\n"
-        "readbacksMode = 2\n"
-        "readbackLinearImages = true\n",
+        json.dumps(
+            {
+                # Stage-0 oracle reads a GPU-written linear RT from guest CPU
+                # memory, so make that readback requirement explicit.
+                "GPU": {
+                    "readbacks_mode": 2,
+                    "readback_linear_images_enabled": True,
+                },
+            },
+            indent=2,
+        )
+        + "\n",
         encoding="utf-8",
     )
     return config
@@ -107,7 +122,7 @@ def main() -> int:
                     for line in rest.splitlines(True):
                         lines.append(line)
                         sys.stdout.write(line)
-                        match = MARKER.search(line)
+                        match = MARKER.search(ANSI_ESCAPE.sub("", line))
                         if match and match.group("name") == args.test:
                             marker_status = match.group("status")
                             marker_line = match.group(0)
@@ -121,7 +136,7 @@ def main() -> int:
                 lines.append(line)
                 sys.stdout.write(line)
                 sys.stdout.flush()
-                match = MARKER.search(line)
+                match = MARKER.search(ANSI_ESCAPE.sub("", line))
                 if match and match.group("name") == args.test:
                     marker_status = match.group("status")
                     marker_line = match.group(0)

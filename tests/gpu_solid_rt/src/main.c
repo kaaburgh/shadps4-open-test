@@ -8,6 +8,7 @@
 #include <orbis/libkernel.h>
 
 #include <gnm_commandbuffer.h>
+#include <gnm_error.h>
 #include <gnm_drawcommandbuffer.h>
 #include <gnm_rendertarget.h>
 #include <gnm_shader.h>
@@ -76,6 +77,17 @@ static void emit_marker(const char* status, const char* detail) {
     fflush(stdout);
     sceKernelDebugOutText(0, line);
     sceKernelDebugOutText(0, "\n");
+}
+
+static unsigned g_gnm_errors = 0;
+
+/* OpenGNM drops diagnostics unless a handler is installed. */
+static void on_gnm_message(GnmMessageSeverity sev, const char* msg, void* user) {
+    (void)user;
+    if (sev == GNM_MSGSEV_ERR) {
+        g_gnm_errors += 1;
+    }
+    printf("opengnm %s: %s\n", sev == GNM_MSGSEV_ERR ? "error" : "warning", msg);
 }
 
 static int fail(const char* reason) {
@@ -282,8 +294,19 @@ static bool load_shader(GpuArena* arena, const char* path,
         return false;
     }
 
+    /* Keep the trailing "OrbShdr" ShaderBinaryInfo next to the code: shadPS4
+     * locates it by scanning forward from the shader address and aborts
+     * ("Shader binary info not found") without it. */
+    uint32_t copy_size = code_size;
+    const uint8_t* after_code = (const uint8_t*)code_src + code_size;
+    if (range_inside(shader_base, shader_size, after_code,
+                     sizeof(GnmShaderBinaryInfo)) &&
+        memcmp(after_code, GNM_SHADER_BINARY_INFO_MAGIC, 7) == 0) {
+        copy_size += sizeof(GnmShaderBinaryInfo);
+    }
+
     void* stage_copy = malloc(stage_size);
-    void* gpu_code = arena_alloc(arena, code_size, GNM_ALIGNMENT_SHADER_BYTES);
+    void* gpu_code = arena_alloc(arena, copy_size, GNM_ALIGNMENT_SHADER_BYTES);
     if (!stage_copy || !gpu_code) {
         free(stage_copy);
         free(file);
@@ -291,7 +314,7 @@ static bool load_shader(GpuArena* arena, const char* path,
     }
 
     memcpy(stage_copy, common, stage_size);
-    memcpy(gpu_code, code_src, code_size);
+    memcpy(gpu_code, code_src, copy_size);
 
     if (expected_type == GNM_SHADER_VERTEX) {
         GnmVsShader* vs = (GnmVsShader*)stage_copy;
@@ -357,6 +380,7 @@ static bool create_linear_rt(GpuArena* arena, GnmRenderTarget* rt,
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     printf("shadps4-open-test: %s start\n", TEST_NAME);
+    sceGnmSetMessageHandler(on_gnm_message, NULL);
 
     GpuArena arena;
     if (!arena_init(&arena)) {
@@ -404,6 +428,9 @@ int main(void) {
 
     GnmCommandBuffer cmd =
         sceGnmCmdInit(cmd_memory, COMMAND_BUFFER_SIZE, NULL, NULL);
+    /* sceGnmCmdInit leaves flags uninitialized; the draw helpers copy
+     * flags.predication_enabled into the PM4 predicate bit. */
+    memset(&cmd.flags, 0, sizeof(cmd.flags));
     sceGnmDrawCmdInitDefaultHardwareState(&cmd);
 
     const GnmPrimitiveSetup primitive = {
@@ -438,6 +465,11 @@ int main(void) {
     sceGnmDrawCmdEventWriteEop(
         &cmd, GNM_FLUSH_AND_INV_CB_DATA_TS,
         (uint64_t)(uintptr_t)eop_label, GNM_DATA_SEL_SEND_DATA64, EOP_VALUE);
+
+    if (g_gnm_errors != 0) {
+        result = fail("opengnm_command_errors");
+        goto cleanup;
+    }
 
     void* dcb_addrs[1] = {cmd.beginptr};
     uint32_t dcb_sizes[1] = {
