@@ -347,23 +347,6 @@ index 2412880..58352c0 100644
  }
  
  static nir_def *
-@@ -103,7 +116,15 @@
-    }
- 
-    assert(state->args->descriptors[set].used);
--   return get_scalar_arg(b, 1, state->args->descriptors[set]);
-+   const struct ac_arg descriptor_arg = state->args->descriptors[set];
-+   if (state->args->ac.args[descriptor_arg.arg_index].size == 2) {
-+      /* load_scalar_arg_amd must match the declared argument width. Keep the
-+       * high half live for later address reconstruction, while this helper
-+       * returns the low pointer dword used in the resource-index tuple. */
-+      nir_def *descriptor_ptr = get_scalar_arg(b, 2, descriptor_arg);
-+      return nir_channel(b, descriptor_ptr, 0);
-+   }
-+   return get_scalar_arg(b, 1, descriptor_arg);
- }
- 
- static nir_def *
 @@ -240,7 +261,13 @@ load_buffer_descriptor(nir_builder *b, lower_descriptors_state *state, nir_def *
     if (access & ACCESS_NON_UNIFORM)
        return nir_iadd(b, nir_channel(b, rsrc, 0), nir_channel(b, rsrc, 1));
