@@ -22,13 +22,13 @@ jobs:
           set -euo pipefail
           source deps.lock
           mkdir -p .deps
-          git clone -q https://github.com/PS4-OpenGNM/opengnm.git .deps/opengnm
+          git clone -q "$OPENGNM_REPO" .deps/opengnm
           git -C .deps/opengnm checkout -q --detach "$OPENGNM_SHA"
-          git clone -q https://github.com/PS4-OpenGNM/opengnm-psbc.git .deps/opengnm-psbc
+          git clone -q "$OPENGNM_PSBC_REPO" .deps/opengnm-psbc
           git -C .deps/opengnm-psbc checkout -q --detach "$OPENGNM_PSBC_SHA"
-          git clone -q https://github.com/KhronosGroup/SPIRV-Headers.git .deps/SPIRV-Headers
+          git clone -q "$SPIRV_HEADERS_REPO" .deps/SPIRV-Headers
           git -C .deps/SPIRV-Headers checkout -q --detach "$SPIRV_HEADERS_SHA"
-          git clone -q https://github.com/KhronosGroup/Vulkan-Headers.git .deps/Vulkan-Headers
+          git clone -q "$VULKAN_HEADERS_REPO" .deps/Vulkan-Headers
           git -C .deps/Vulkan-Headers checkout -q --detach "$VULKAN_HEADERS_SHA"
 
       - name: Build unpatched baseline psbc
