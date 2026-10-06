@@ -19,6 +19,13 @@
  *   rt_masked_after_buffer_write_cpu_read
  *                                        compute writes; CPU reads; R-only
  *                                        draw (control)
+ *   buffer_read_after_rt_full            compute writes; full draw; compute
+ *                                        reads the bytes back (the GPU side,
+ *                                        no CPU read until the end)
+ *
+ * Within a case nothing reads the target from the CPU until the case's own
+ * checks: on shadPS4 any CPU read of GPU-written memory downloads a whole
+ * 512 KiB window, which covers every target here.
  *
  * Every case runs even after a failure.
  */
@@ -112,18 +119,35 @@ static bool load_graphics_shader(StArena* arena, const char* path,
         return false;
     }
 
+    const size_t stage_struct_bytes = expected_type == GNM_SHADER_VERTEX
+                                          ? sizeof(GnmVsShader)
+                                          : sizeof(GnmPsShader);
+    if (stage_header_bytes < stage_struct_bytes) {
+        free(file);
+        return false;
+    }
+
     const GnmShaderCommonData* common =
         (const GnmShaderCommonData*)(shader_base + sizeof(GnmShaderFileHeader));
     uint32_t stage_size = 0;
     const void* code_src = NULL;
+    /* The draws set up no vertex exports or pixel interpolants. */
+    bool unexpected_io = false;
     if (expected_type == GNM_SHADER_VERTEX) {
         const GnmVsShader* vs = (const GnmVsShader*)common;
         stage_size = sceGnmVsShaderCalcSize(vs);
         code_src = sceGnmVsShaderCodePtr(vs);
+        unexpected_io = vs->numexportsemantics != 0;
     } else {
         const GnmPsShader* ps = (const GnmPsShader*)common;
         stage_size = sceGnmPsShaderCalcSize(ps);
         code_src = sceGnmPsShaderCodePtr(ps);
+        unexpected_io = ps->numinputsemantics != 0;
+    }
+    if (unexpected_io) {
+        printf("%s has unexpected shader IO\n", path);
+        free(file);
+        return false;
     }
     if (stage_size > stage_header_bytes) {
         free(file);
@@ -193,6 +217,9 @@ typedef struct {
 } Target;
 
 static bool create_target(StArena* arena, Target* t) {
+    /* sceGnmCreateRenderTarget leaves CMASK/FMASK/fast-clear fields alone
+     * (and reads tilemode_index before writing it), so start from zero. */
+    memset(t, 0, sizeof(*t));
     const GnmRenderTargetCreateInfo info = {
         .colorfmt = GNM_FMT_R8G8B8A8_UNORM,
         .width = WIDTH,
@@ -271,17 +298,21 @@ static bool draw_and_wait(StQueue* queue, Target* t, GraphicsShader* vs,
     void* addrs[1] = {cmd.beginptr};
     uint32_t sizes[1] = {
         (uint32_t)((uintptr_t)cmd.cmdptr - (uintptr_t)cmd.beginptr)};
-    st_compiler_barrier();
-    if (sceGnmSubmitCommandBuffers(1, addrs, sizes, NULL, NULL) < 0 ||
-        sceGnmSubmitDone() < 0) {
+    st_store_fence();
+    const int32_t submit_res =
+        sceGnmSubmitCommandBuffers(1, addrs, sizes, NULL, NULL);
+    if (submit_res < 0) {
+        printf("sceGnmSubmitCommandBuffers failed: 0x%x\n",
+               (unsigned)submit_res);
         return false;
     }
-    for (unsigned ms = 0; ms < ST_EOP_WAIT_MS; ++ms) {
-        if (*queue->label == value) {
-            st_compiler_barrier();
-            return true;
-        }
-        sceKernelUsleep(1000);
+    const int32_t done_res = sceGnmSubmitDone();
+    if (done_res < 0) {
+        printf("sceGnmSubmitDone failed: 0x%x\n", (unsigned)done_res);
+        return false;
+    }
+    if (st_wait_label(queue->label, value)) {
+        return true;
     }
     printf("draw EOP timeout\n");
     return false;
@@ -338,15 +369,20 @@ typedef struct {
     const char* name;
     Prep prep;
     uint32_t channel_mask;
+    /* After the draw, compute reads the target back and only that result is
+     * checked. */
+    bool compute_reads_after;
 } DrawCaseSpec;
 
 static const DrawCaseSpec DRAW_CASE_SPECS[] = {
     /* control: the masked draw itself */
-    {"rt_masked_after_cpu_write", PREP_CPU_WRITE, 0x01},
-    {"rt_full_after_buffer_write", PREP_BUFFER_WRITE, 0x0f},
-    {"rt_masked_after_buffer_write", PREP_BUFFER_WRITE, 0x01},
+    {"rt_masked_after_cpu_write", PREP_CPU_WRITE, 0x01, false},
+    {"rt_full_after_buffer_write", PREP_BUFFER_WRITE, 0x0f, false},
+    {"rt_masked_after_buffer_write", PREP_BUFFER_WRITE, 0x01, false},
     /* control: the CPU reads the buffer-written bytes before the draw */
-    {"rt_masked_after_buffer_write_cpu_read", PREP_BUFFER_WRITE_CPU_READ, 0x01},
+    {"rt_masked_after_buffer_write_cpu_read", PREP_BUFFER_WRITE_CPU_READ, 0x01,
+     false},
+    {"buffer_read_after_rt_full", PREP_BUFFER_WRITE, 0x0f, true},
 };
 
 enum { DRAW_CASES = sizeof(DRAW_CASE_SPECS) / sizeof(DRAW_CASE_SPECS[0]) };
@@ -365,15 +401,17 @@ static uint32_t fnv1a_words(uint32_t hash, const volatile uint32_t* words,
 }
 
 /* Prepares the target's bytes as the spec says, draws red.frag with the
- * spec's channel mask and verifies what the CPU then sees. Returns false only
- * for a submission failure. */
+ * spec's channel mask and verifies what the CPU (or, for compute_reads_after,
+ * a compute read-back into out) then sees. write_table is source -> target,
+ * read_table target -> out. Returns false only for a submission failure. */
 static bool run_draw_case(StQueue* queue, const StComputeShader* cs,
-                          GnmBuffer* table, Target* t, GraphicsShader* vs,
+                          GnmBuffer* write_table, GnmBuffer* read_table,
+                          volatile uint32_t* out, Target* t, GraphicsShader* vs,
                           GraphicsShader* red_ps, const DrawCaseSpec* spec,
                           CaseResult* r) {
     const bool buffer_written = spec->prep != PREP_CPU_WRITE;
     if (buffer_written) {
-        if (!st_dispatch_and_wait(queue, cs, table,
+        if (!st_dispatch_and_wait(queue, cs, write_table,
                                   t->words / ST_LOCAL_SIZE_X)) {
             return false;
         }
@@ -383,6 +421,8 @@ static bool run_draw_case(StQueue* queue, const StComputeShader* cs,
         }
     }
     if (spec->prep == PREP_BUFFER_WRITE_CPU_READ) {
+        /* This read also downloads every other GPU write in its 512 KiB
+         * window; the other cases have finished their checks by now. */
         for (uint32_t i = 0; i < t->words; ++i) {
             const uint32_t expected = transform(source_word(i), i);
             if (t->pixels[i] != expected) {
@@ -394,6 +434,33 @@ static bool run_draw_case(StQueue* queue, const StComputeShader* cs,
 
     if (!draw_and_wait(queue, t, vs, red_ps, spec->channel_mask)) {
         return false;
+    }
+
+    if (spec->compute_reads_after) {
+        /* Validated on shadPS4 only: on hardware a CB write followed by a
+         * shader read may need a cache invalidate before the dispatch. */
+        if (!st_dispatch_and_wait(queue, cs, read_table,
+                                  t->words / ST_LOCAL_SIZE_X)) {
+            return false;
+        }
+        for (uint32_t i = 0; i < t->words; ++i) {
+            if (i % t->pitch >= WIDTH) {
+                continue;
+            }
+            const uint32_t expected = transform(RED_VALUE, i);
+            const uint32_t got = out[i];
+            if (got == expected) {
+                continue;
+            }
+            const char* reason = "buffer_mismatch";
+            if (got == POISON) {
+                reason = "buffer_unwritten";
+            } else if (got == transform(transform(source_word(i), i), i)) {
+                reason = "buffer_saw_stale_memory";
+            }
+            note(r, reason, i, t->pitch, expected, got);
+        }
+        return true;
     }
 
     const bool masked = spec->channel_mask != 0x0f;
@@ -410,7 +477,9 @@ static bool run_draw_case(StQueue* queue, const StComputeShader* cs,
             continue;
         }
         const char* reason = "rt_mismatch";
-        if (got == under) {
+        if (got == POISON) {
+            reason = "nothing_visible";
+        } else if (got == under) {
             reason = "draw_not_visible";
         } else if (masked && (got & 0xffffff00u) == (POISON & 0xffffff00u)) {
             reason = "rt_saw_stale_memory";
@@ -463,16 +532,22 @@ int main(void) {
         printf("render target pitch %u, expected %u\n", a.pitch, WIDTH);
     }
 
+    /* tables: rt_to_buffer, then per draw case a write table (source ->
+     * target) and a read table (target -> read_back). */
     GnmBuffer* tables = (GnmBuffer*)st_arena_alloc(
-        &arena, (1 + DRAW_CASES) * BINDINGS * sizeof(GnmBuffer), ST_PAGE_BYTES);
+        &arena, (1 + 2 * DRAW_CASES) * BINDINGS * sizeof(GnmBuffer),
+        ST_PAGE_BYTES);
     volatile uint32_t* out = (volatile uint32_t*)st_arena_alloc(
+        &arena, a.words * sizeof(uint32_t), ST_PAGE_BYTES);
+    volatile uint32_t* read_back = (volatile uint32_t*)st_arena_alloc(
         &arena, a.words * sizeof(uint32_t), ST_PAGE_BYTES);
     volatile uint32_t* source = (volatile uint32_t*)st_arena_alloc(
         &arena, a.words * sizeof(uint32_t), ST_PAGE_BYTES);
-    if (!tables || !out || !source) {
+    if (!tables || !out || !read_back || !source) {
         return st_fail("reason=arena_memory");
     }
     st_fill_words(out, a.words, POISON);
+    st_fill_words(read_back, a.words, POISON);
     for (uint32_t i = 0; i < a.words; ++i) {
         source[i] = source_word(i);
     }
@@ -483,6 +558,10 @@ int main(void) {
         table[0] = st_raw_buffer(source, a.words * sizeof(uint32_t));
         table[1] = st_raw_buffer(targets[k].pixels,
                                  targets[k].words * sizeof(uint32_t));
+        GnmBuffer* read_table = &tables[(1 + DRAW_CASES + k) * BINDINGS];
+        read_table[0] = st_raw_buffer(targets[k].pixels,
+                                      targets[k].words * sizeof(uint32_t));
+        read_table[1] = st_raw_buffer(read_back, a.words * sizeof(uint32_t));
     }
 
     CaseResult cases[1 + DRAW_CASES] = {{.name = "rt_to_buffer"}};
@@ -490,7 +569,9 @@ int main(void) {
         cases[1 + k].name = DRAW_CASE_SPECS[k].name;
     }
 
-    /* rt_to_buffer */
+    /* rt_to_buffer. No GPU agent cached a's lines before the draw; on
+     * hardware a CB write followed by a shader read may otherwise need a
+     * cache invalidate. Validated on shadPS4 only. */
     if (!draw_and_wait(&queue, &a, &vs, &pattern_ps, 0x0f)) {
         return st_fail("reason=draw case=rt_to_buffer");
     }
@@ -532,6 +613,7 @@ int main(void) {
     /* Draws over bytes the CPU or a compute dispatch wrote. */
     for (unsigned k = 0; k < DRAW_CASES; ++k) {
         if (!run_draw_case(&queue, &transform_cs, &tables[(1 + k) * BINDINGS],
+                           &tables[(1 + DRAW_CASES + k) * BINDINGS], read_back,
                            &targets[k], &vs, &red_ps, &DRAW_CASE_SPECS[k],
                            &cases[1 + k])) {
             return st_fail("reason=submit case=%s", DRAW_CASE_SPECS[k].name);
