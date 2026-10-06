@@ -67,7 +67,8 @@ enum {
 
 static unsigned st_gnm_errors = 0;
 
-static inline void st_emit_marker(const char* status, const char* fmt, ...) {
+__attribute__((format(printf, 2, 3))) static inline void st_emit_marker(
+    const char* status, const char* fmt, ...) {
     char detail[224] = "";
     if (fmt) {
         va_list ap;
@@ -92,7 +93,8 @@ static inline void st_emit_marker(const char* status, const char* fmt, ...) {
 }
 
 /* Emits a FAIL marker and returns the test's failing exit status. */
-static inline int st_fail(const char* fmt, ...) {
+__attribute__((format(printf, 1, 2))) static inline int st_fail(
+    const char* fmt, ...) {
     char detail[224];
     va_list ap;
     va_start(ap, fmt);
@@ -122,6 +124,31 @@ static inline void st_begin(void) {
  * submission or completion wait. */
 static inline void st_compiler_barrier(void) {
     __asm__ __volatile__("" ::: "memory");
+}
+
+/* The arena is Garlic memory, which the CPU maps write-combining: x86 orders
+ * neither WC stores nor WC loads the way it orders write-back memory, so the
+ * compiler barrier alone is not enough on hardware.
+ *
+ * Drains the CPU's WC stores before the GPU is told to read them. */
+static inline void st_store_fence(void) {
+    __builtin_ia32_sfence();
+}
+
+/* Polls a GPU-written label for up to ST_EOP_WAIT_MS. Once it matches, the
+ * load fence keeps later reads of GPU-written data from being satisfied
+ * before the label read. */
+static inline bool st_wait_label(const volatile uint64_t* label,
+                                 uint64_t value) {
+    for (unsigned i = 0; i < ST_EOP_WAIT_MS; ++i) {
+        if (*label == value) {
+            __builtin_ia32_lfence();
+            st_compiler_barrier();
+            return true;
+        }
+        sceKernelUsleep(1000);
+    }
+    return false;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -481,6 +508,9 @@ static inline bool st_dispatch_and_wait(StQueue* queue,
     sceGnmDrawCmdSetPointerUserData(
         &cmd, GNM_STAGE_CS, shader->descriptor_table_slot, descriptor_table);
     sceGnmDrawCmdDispatchDirect(&cmd, groups_x, 1, 1, 0);
+    /* OpenGNM's EOP sets no TC cache-action bits; visibility of the shader's
+     * buffer writes rests on the CACHE_COHERENT V# memory type from
+     * st_raw_buffer. Validated on shadPS4 only, not on PS4 hardware. */
     sceGnmDrawCmdEventWriteEop(&cmd, GNM_CACHE_FLUSH_AND_INV_TS_EVENT,
                                (uint64_t)(uintptr_t)queue->label,
                                GNM_DATA_SEL_SEND_DATA64, value);
@@ -494,7 +524,7 @@ static inline bool st_dispatch_and_wait(StQueue* queue,
         (uint32_t)((uintptr_t)cmd.cmdptr - (uintptr_t)cmd.beginptr),
     };
 
-    st_compiler_barrier();
+    st_store_fence();
     const int32_t submit_res =
         sceGnmSubmitCommandBuffers(1, dcb_addrs, dcb_sizes, NULL, NULL);
     if (submit_res < 0) {
@@ -509,13 +539,9 @@ static inline bool st_dispatch_and_wait(StQueue* queue,
         return false;
     }
 
-    for (unsigned i = 0; i < ST_EOP_WAIT_MS; ++i) {
-        if (*queue->label == value) {
-            queue->last_dcb_bytes = dcb_sizes[0];
-            st_compiler_barrier();
-            return true;
-        }
-        sceKernelUsleep(1000);
+    if (st_wait_label(queue->label, value)) {
+        queue->last_dcb_bytes = dcb_sizes[0];
+        return true;
     }
 
     printf("compute EOP timeout waiting for 0x%016llx\n",

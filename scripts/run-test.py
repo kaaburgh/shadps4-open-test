@@ -97,18 +97,20 @@ def main() -> int:
     command = [args.shadps4, str(elf)]
     run_dir.mkdir(parents=True, exist_ok=True)
 
+    # Unbuffered bytes: a buffered readline() can pull the marker into Python's
+    # buffer behind an earlier line, and select() then never wakes up for it.
     proc = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
+        bufsize=0,
         env=env,
     )
     assert proc.stdout is not None
+    stdout_fd = proc.stdout.fileno()
 
     selector = selectors.DefaultSelector()
-    selector.register(proc.stdout, selectors.EVENT_READ)
+    selector.register(stdout_fd, selectors.EVENT_READ)
 
     deadline = time.monotonic() + args.timeout
     marker_status: str | None = None
@@ -134,26 +136,31 @@ def main() -> int:
             critical_line = plain.strip()
         return False
 
+    pending = b""
+
+    def consume_bytes(data: bytes, final: bool = False) -> bool:
+        """Feed raw output; return True once the result marker is seen."""
+        nonlocal pending
+        pending += data
+        *complete, pending = pending.split(b"\n")
+        if final and pending:
+            complete.append(pending)
+            pending = b""
+        for raw in complete:
+            if consume(raw.decode("utf-8", "replace") + "\n"):
+                return True
+        return False
+
     try:
         while time.monotonic() < deadline:
             if proc.poll() is not None:
-                rest = proc.stdout.read()
-                if rest:
-                    for line in rest.splitlines(True):
-                        if consume(line):
-                            break
+                consume_bytes(proc.stdout.read() or b"", final=True)
                 break
 
-            events = selector.select(timeout=0.25)
-            for key, _ in events:
-                line = key.fileobj.readline()
-                if not line:
-                    continue
-                if consume(line):
+            if selector.select(timeout=0.25):
+                chunk = os.read(stdout_fd, 65536)
+                if chunk and consume_bytes(chunk):
                     break
-
-            if marker_status is not None:
-                break
     finally:
         log_path.write_text("".join(lines), encoding="utf-8")
 
