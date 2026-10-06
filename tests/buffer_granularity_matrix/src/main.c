@@ -17,7 +17,10 @@
  * page the case never touches. R and the parameters live outside the window.
  *
  * The cases cover sizes from one word to 64 KiB, so some bindings are small
- * and some are not; the oracle is the same for all of them.
+ * and some are not; the oracle is the same for all of them. (shadPS4
+ * currently copies read-only bindings of up to 16 KiB on every dispatch
+ * instead of tracking them, so there the checker reads B through the
+ * tracked path only in the 64 KiB cases and sparse_interleaved.)
  */
 
 #define SHADTEST_NAME "buffer_granularity_matrix"
@@ -64,8 +67,13 @@ static const Layout LAYOUTS[] = {
     /* 16 KiB each: page-aligned and separate, then sharing a page. */
     {"16k_separate", 0x1000, 4096, 1, 0x6000, 4096, 1},
     {"16k_shared_page", 0x1800, 4096, 1, 0x5800, 4096, 1},
-    /* 64 KiB each, sharing the page where A ends. */
+    /* 64 KiB each: page-aligned and separate, then sharing the page where A
+     * ends. */
+    {"64k_separate", 0x1000, 16384, 1, 0x12000, 16384, 1},
     {"64k_shared_page", 0x1c00, 16384, 1, 0x11c00, 16384, 1},
+    /* The sparse cases are sparse in the words written. The writer binds
+     * A's whole span, though, so an emulator that tracks GPU writes per
+     * binding (shadPS4 does) sees one dense GPU write around B's words. */
     /* One word of A and one of B in each of 16 pages. */
     {"sparse_interleaved", 0x1000, 16, 1024, 0x1008, 16, 1024},
     /* A one word per page; B a short contiguous run in A's first page. */
@@ -75,6 +83,7 @@ static const Layout LAYOUTS[] = {
 };
 
 enum { LAYOUT_COUNT = sizeof(LAYOUTS) / sizeof(LAYOUTS[0]) };
+_Static_assert(LAYOUT_COUNT <= 16, "failed_mask is printed as 16 bits");
 
 static uint32_t guard_word(uint32_t salt, uint32_t window_word) {
     return 0x47554152u ^ (window_word * 0x9E3779B1u) ^ salt;
@@ -271,7 +280,8 @@ static bool setup_case(StArena* arena, unsigned k, Case* c) {
     c->params = (volatile uint32_t*)st_arena_alloc(
         arena, PARAMS_WORDS * WORD_BYTES, ST_PAGE_BYTES);
     c->writer_table = (GnmBuffer*)st_arena_alloc(
-        arena, (WRITER_BINDINGS + CHECKER_BINDINGS) * sizeof(GnmBuffer), 256);
+        arena, (WRITER_BINDINGS + CHECKER_BINDINGS) * sizeof(GnmBuffer),
+        ST_PAGE_BYTES);
     c->owned = (uint8_t*)calloc(c->window_words, 1);
     if (!window || !c->r || !c->params || !c->writer_table || !c->owned) {
         return false;
@@ -335,7 +345,7 @@ int main(void) {
     unsigned failed_cases = 0;
     const Layout* first_layout = NULL;
     Failure first = {0};
-    char failed_names[192] = "";
+    uint32_t failed_mask = 0; /* bit k: LAYOUTS[k] failed */
     uint32_t checksum = 0x811c9dc5u;
 
     for (unsigned k = 0; k < LAYOUT_COUNT; ++k) {
@@ -393,9 +403,7 @@ int main(void) {
                 first = *f;
             }
             failed_cases += 1;
-            const size_t used = strlen(failed_names);
-            snprintf(failed_names + used, sizeof(failed_names) - used, "%s%s",
-                     used ? "," : "", l->name);
+            failed_mask |= 1u << k;
         } else {
             printf("case %s a=0x%x+%ux%u b=0x%x+%ux%u: ok\n", l->name,
                    l->a_offset, l->a_count, l->a_stride, l->b_offset,
@@ -412,9 +420,9 @@ int main(void) {
     if (first_layout) {
         return st_fail(
             "reason=%s case=%s gen=%u index=%u expected=%08x got=%08x "
-            "failed_cases=%u failed=%s",
+            "failed_cases=%u failed_mask=0x%04x",
             first.reason, first_layout->name, first.generation, first.index,
-            first.expected, first.got, failed_cases, failed_names);
+            first.expected, first.got, failed_cases, failed_mask);
     }
 
     st_emit_marker("PASS", "cases=%u generations=%u checksum=%08x",
