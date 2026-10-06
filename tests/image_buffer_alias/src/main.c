@@ -4,7 +4,8 @@
  * The same backing bytes are used as a linear render target and as a raw
  * buffer in ordered phases, in both directions. This moves ownership between
  * shadPS4's TextureCache and BufferCache, which the buffer-only tests avoid.
- * Every render target is 64x64 R8G8B8A8_UNORM, linear, in its own pages.
+ * Every render target is 64x128 R8G8B8A8_UNORM (32 KiB), linear, in its own
+ * pages.
  *
  * rt_to_buffer:
  *   draw a per-pixel pattern; compute reads the target as a raw buffer
@@ -25,7 +26,7 @@
  *
  * Within a case nothing reads the target from the CPU until the case's own
  * checks: on shadPS4 any CPU read of GPU-written memory downloads a whole
- * 512 KiB window, which covers every target here.
+ * 512 KiB window, which can include other cases' targets.
  *
  * Every case runs even after a failure.
  */
@@ -37,11 +38,17 @@
 
 enum {
     WIDTH = 64,
-    HEIGHT = 64,
+    HEIGHT = 128,
     RED_VALUE = 90, /* red.frag.glsl writes 90 / 255 */
     ARENA_BYTES = 2 * 1024 * 1024,
     BINDINGS = 2,
 };
+
+/* shadPS4 copies read-only bindings of up to 16 KiB (STREAM_THRESHOLD) from
+ * guest memory on every dispatch, bypassing the tracked buffer that the
+ * buffer_read_after_rt_full case checks. */
+_Static_assert(WIDTH * HEIGHT * 4 > 16 * 1024,
+               "targets must be larger than shadPS4's stream threshold");
 
 static const uint32_t POISON = 0xcdcdcdcdu;
 
