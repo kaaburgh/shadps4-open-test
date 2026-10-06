@@ -1,12 +1,12 @@
 /*
  * map_unmap_reuse: Stage 9 of docs/memory-uma-test-roadmap.md.
  *
- * Memory lifetime rather than content: a 128 KiB direct-memory mapping is
+ * Memory lifetime rather than content: a 256 KiB direct-memory mapping is
  * used by the CPU and the GPU, unmapped, and mapped again at the same
  * virtual address. No CPU/GPU authority, page-tracking state or cached GPU
  * resource from an earlier lifetime may leak into the next one.
  *
- * Mapping layout (16 KiB each): X guard Y guard Z guard W guard.
+ * Mapping layout (32 KiB each): X guard Y guard Z guard W guard.
  *
  * Each lifetime g = 1..3:
  *   1. CPU writes X = P(g), Z = Q(g), poisons Y and W, rewrites the guards.
@@ -33,7 +33,7 @@
 #include "shadtest_guest.h"
 
 enum {
-    REGION_BYTES = 16 * 1024,
+    REGION_BYTES = 32 * 1024,
     REGION_WORDS = REGION_BYTES / sizeof(uint32_t),
     MAPPING_BYTES = 8 * REGION_BYTES,
     X_OFFSET = 0 * REGION_BYTES,
@@ -55,6 +55,11 @@ enum {
 
 _Static_assert(REGION_WORDS % ST_LOCAL_SIZE_X == 0,
                "regions must be whole workgroups");
+/* shadPS4 copies read-only bindings of up to 16 KiB (STREAM_THRESHOLD) from
+ * guest memory on every dispatch, so a stale cached copy of X or Z from an
+ * earlier lifetime could never be read. */
+_Static_assert(REGION_BYTES > 16 * 1024,
+               "regions must be larger than shadPS4's stream threshold");
 
 static const uint32_t OUTPUT_POISON = 0xcdcdcdcdu;
 
