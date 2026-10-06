@@ -18,11 +18,12 @@
  *      CPU wrote in step 2, a third words the GPU wrote, a third random.
  *   4. The CPU checks out[], every word written in step 2, and 512 random
  *      words, all against a host-side model of the pool.
- *   5. After generations 4, 8 and 12 the pool is unmapped and the same
+ *   5. In generations 4, 8 and 12 the pool is unmapped and the same
  *      direct memory is mapped again at the same address (Stage 9's
- *      remap_keep); 512 random words are checked afterwards. The next
- *      generation is odd, so as in Stage 9 the CPU writes first after a
- *      remap.
+ *      remap_keep). This happens in step 2, between the GPU runs and the
+ *      CPU runs, so the GPU's writes are still pending at the unmap and, as
+ *      in Stage 9, the CPU writes first after the remap. 512 more random
+ *      words are checked after step 4.
  *
  * Within a generation the CPU and GPU never write the same word, so every
  * result is defined; pages are shared freely. Every generation runs even
@@ -57,6 +58,7 @@ enum {
 };
 
 _Static_assert(GENERATIONS < 256, "claims are stamped with a u8 generation");
+_Static_assert(REMAP_EVERY % 2 == 0, "remaps must be in GPU-first generations");
 
 static const uint32_t OUT_POISON = 0xcdcdcdcdu;
 
@@ -118,7 +120,10 @@ static void claim_run(Plan* p, uint32_t start, uint32_t len, unsigned g,
                       bool gpu) {
     for (uint32_t w = start; w < start + len; ++w) {
         if (p->claimed[w] == g) {
-            continue; /* a page picked twice: first claim wins */
+            /* A page picked twice in one generation: the first claim wins,
+             * which keeps the lists disjoint; a rare collision only shortens
+             * a run. */
+            continue;
         }
         p->claimed[w] = (uint8_t)g;
         if (gpu) {
@@ -367,6 +372,18 @@ int main(void) {
             const uint32_t w = plan.gpu[k];
             plan.model[w] = gpu_value(w, g);
         }
+        /* 5. Lifetime transition with the contents kept, while the GPU's
+         * writes are still pending. The address stays the same, so `pool`
+         * and the descriptor tables stay valid. */
+        const bool remap = g % REMAP_EVERY == 0 && g < GENERATIONS;
+        if (remap) {
+            void* const base = pool_map.base;
+            if (sceKernelMunmap(base, POOL_BYTES) != 0 ||
+                !map_pool(&pool_map, base)) {
+                return st_fail("reason=remap gen=%u", g);
+            }
+            remaps += 1;
+        }
         if (!cpu_first) {
             /* Nothing in the pool has been read since the GPU runs. */
             write_cpu_runs(pool, &plan, g);
@@ -414,17 +431,9 @@ int main(void) {
         const unsigned bad_sample =
             check_sample(pool, &plan, &rng, "sample", g);
 
-        /* 5. Lifetime transition with the contents kept. */
         unsigned bad_remap = 0;
-        const bool remap = g % REMAP_EVERY == 0 && g < GENERATIONS;
         if (remap) {
-            void* const base = pool_map.base;
-            if (sceKernelMunmap(base, POOL_BYTES) != 0 ||
-                !map_pool(&pool_map, base)) {
-                return st_fail("reason=remap gen=%u", g);
-            }
             bad_remap = check_sample(pool, &plan, &rng, "after_remap", g);
-            remaps += 1;
         }
 
         const bool ok = g_failures == before;
@@ -451,7 +460,7 @@ int main(void) {
             v >>= 8;
         }
     }
-    printf("final: %s bad_words=%u\n", bad_final ? "FAIL" : "ok", bad_final);
+    printf("final: %s bad_final=%u\n", bad_final ? "FAIL" : "ok", bad_final);
 
     if (st_gnm_errors != 0) {
         return st_fail("reason=gnm_error count=%u", st_gnm_errors);
