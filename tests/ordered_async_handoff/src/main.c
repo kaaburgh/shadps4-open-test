@@ -67,6 +67,16 @@ static uint64_t token(unsigned round) {
     return 0x4F52444552000000ULL | round; /* "ORDER" */
 }
 
+/* Once anything is queued, rounds wait on `go`. Failing paths in main()
+ * release them all first, so no GPU work is left blocked on a release that
+ * never comes. */
+static void release_all(volatile uint32_t* go) {
+    *go = ROUNDS;
+    st_store_fence();
+}
+
+#define FAIL_RELEASED(...) (release_all(go), st_fail(__VA_ARGS__))
+
 typedef struct {
     void* memory;
     uint32_t bytes;
@@ -144,7 +154,8 @@ int main(void) {
         Dcb dcb;
         if (!build_round(&dcb, dcb_memory + r * DCB_BYTES, &shader,
                          &tables[r * BINDINGS], go, r + 1, &done[r])) {
-            return st_fail("reason=gnm_error stage=build round=%u", r + 1);
+            return FAIL_RELEASED("reason=gnm_error stage=build round=%u",
+                                 r + 1);
         }
         void* addrs[1] = {dcb.memory};
         uint32_t sizes[1] = {dcb.bytes};
@@ -152,14 +163,19 @@ int main(void) {
         const int32_t res =
             sceGnmSubmitCommandBuffers(1, addrs, sizes, NULL, NULL);
         if (res < 0) {
-            return st_fail("reason=submit round=%u res=0x%x", r + 1,
-                           (unsigned)res);
+            return FAIL_RELEASED("reason=submit round=%u res=0x%x", r + 1,
+                                 (unsigned)res);
         }
     }
+    /* One SubmitDone after all the submits. On shadPS4, a SubmitDone while
+     * the GPU is busy makes every later submit wait for the GPU to go idle,
+     * which never happens while round 1 waits for `go`. */
     const int32_t done_res = sceGnmSubmitDone();
     if (done_res < 0) {
-        return st_fail("reason=submit_done res=0x%x", (unsigned)done_res);
+        return FAIL_RELEASED("reason=submit_done res=0x%x", (unsigned)done_res);
     }
+    /* Progress lines tell a hang in the submits from one in a readback. */
+    printf("queued %u rounds\n", (unsigned)ROUNDS);
 
     /* Nothing may complete before its release. 20 ms is enough for the GPU
      * (or shadPS4 on lavapipe) to reach the first wait; a host that ignores
@@ -167,7 +183,7 @@ int main(void) {
     sceKernelUsleep(20 * 1000);
     for (unsigned r = 0; r < ROUNDS; ++r) {
         if (done[r] != 0) {
-            return st_fail("reason=ran_before_release round=%u", r + 1);
+            return FAIL_RELEASED("reason=ran_before_release round=%u", r + 1);
         }
     }
 
@@ -176,7 +192,7 @@ int main(void) {
      * for its expectations. */
     uint32_t* expected_in = (uint32_t*)malloc(REGION_BYTES);
     if (!expected_in) {
-        return st_fail("reason=host_memory");
+        return FAIL_RELEASED("reason=host_memory");
     }
     for (uint32_t i = 0; i < REGION_WORDS; ++i) {
         expected_in[i] = seed(i);
@@ -193,16 +209,18 @@ int main(void) {
         st_store_fence();
 
         if (!st_wait_label(&done[r], token(round))) {
-            return st_fail("reason=eop_timeout round=%u", round);
+            return FAIL_RELEASED("reason=eop_timeout round=%u", round);
         }
 
         /* Later rounds must still be waiting for their release. */
         for (unsigned later = r + 1; later < ROUNDS; ++later) {
             if (done[later] != 0) {
-                return st_fail("reason=ran_before_release round=%u", later + 1);
+                return FAIL_RELEASED("reason=ran_before_release round=%u",
+                                     later + 1);
             }
         }
 
+        printf("round %u: label seen, reading output\n", round);
         /* What the GPU read first, then whether the CPU's input survived. */
         for (uint32_t i = 0; i < REGION_WORDS; ++i) {
             const uint32_t expected = transform(expected_in[i], i);
@@ -216,12 +234,13 @@ int main(void) {
             } else if (got == transform(INPUT_POISON, i)) {
                 reason = "gpu_read_unreleased_input";
             }
-            return st_fail("reason=%s round=%u index=%u expected=%08x got=%08x",
-                           reason, round, i, expected, got);
+            return FAIL_RELEASED(
+                "reason=%s round=%u index=%u expected=%08x got=%08x", reason,
+                round, i, expected, got);
         }
         for (uint32_t i = 0; i < REGION_WORDS; ++i) {
             if (in[r][i] != expected_in[i]) {
-                return st_fail(
+                return FAIL_RELEASED(
                     "reason=input_changed round=%u index=%u expected=%08x "
                     "got=%08x",
                     round, i, expected_in[i], in[r][i]);
@@ -242,7 +261,7 @@ int main(void) {
     }
 
     if (st_gnm_errors != 0) {
-        return st_fail("reason=gnm_error count=%u", st_gnm_errors);
+        return FAIL_RELEASED("reason=gnm_error count=%u", st_gnm_errors);
     }
 
     st_emit_marker("PASS", "rounds=%u queued_ahead=%u checksum=%08x",
