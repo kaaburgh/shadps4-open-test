@@ -7,6 +7,13 @@
 # and then includes this file. src/main.c is the only guest source.
 
 COMMON := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
+
+# build-test.sh and run-test.py find a test by its directory name, and an
+# empty TEST would make `clean` remove every test's output.
+ifneq ($(TEST),$(notdir $(CURDIR)))
+$(error TEST ($(TEST)) must match the test directory name ($(notdir $(CURDIR))))
+endif
+
 ROOT := $(abspath $(COMMON)/../..)
 DEPS := $(ROOT)/.deps
 TOOLCHAIN := $(DEPS)/openorbis
@@ -31,7 +38,7 @@ CREATE_FSELF := $(TOOLCHAIN)/bin/linux/create-fself
 OBJ := $(BUILD)/main.o
 COMP_SB := $(patsubst %,$(OUT)/assets/%.comp.sb,$(COMPUTE_SHADERS))
 
-CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -O2 -g \
+CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -O2 -g -MMD -MP \
 	--target=x86_64-ps4-elf -fPIC \
 	-isysroot $(TOOLCHAIN) -isystem $(TOOLCHAIN)/include \
 	-I$(OPENGNM)/include -I$(COMMON)
@@ -68,8 +75,13 @@ $(RAW_ELF): $(OBJ) $(OPENGNM)/libopengnm.a | $(BUILD)
 $(BUILD)/%.comp.spv: assets/%.comp.glsl | $(BUILD)
 	$(GLSLC) -fshader-stage=compute --target-env=vulkan1.1 "$<" -o "$@"
 
-$(OUT)/assets/%.comp.sb: $(BUILD)/%.comp.spv | $(OUT)/assets
+# Depends on the compiler too: bootstrap rebuilds psbc in place when its
+# patch set changes.
+$(OUT)/assets/%.comp.sb: $(BUILD)/%.comp.spv $(PSBC) | $(OUT)/assets
 	"$(PSBC)" -s compute -f "$<" -o "$@" -4
 
 clean:
 	rm -rf "$(BUILD)" "$(OUT)"
+
+# Header dependencies, including OpenGNM's inline helpers.
+-include $(OBJ:.o=.d)
