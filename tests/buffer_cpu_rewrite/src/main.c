@@ -24,6 +24,10 @@
  *
  * Layout (one block, page aligned): guard X guard Y1 guard Y2 guard Y3 guard,
  * with 4 KiB guards and 64 KiB buffers.
+ *
+ * Passes 2 and 3 re-read X with no GPU cache invalidate in between. On a
+ * PS4 that relies on the CACHE_COHERENT buffer type for CPU-written Garlic
+ * memory, as the shared helpers do; it is validated on shadPS4 only.
  */
 
 #define SHADTEST_NAME "buffer_cpu_rewrite"
@@ -79,7 +83,7 @@ typedef struct {
     unsigned bad_output;
     unsigned bad_input;
     unsigned bad_guard;
-    uint32_t stale_page_mask;
+    uint32_t bad_output_page_mask;
 } PassResult;
 
 static void note_failure(Failure* f, const char* reason, unsigned pass,
@@ -149,7 +153,7 @@ static void verify_pass(unsigned pass, const volatile uint32_t* x,
         note_failure(&result->first, reason, pass, i, expected, got,
                      got_generation);
         result->bad_output += 1;
-        result->stale_page_mask |= 1u << page;
+        result->bad_output_page_mask |= 1u << page;
     }
 
     for (uint32_t i = 0; i < BUFFER_WORDS; ++i) {
@@ -284,9 +288,9 @@ int main(void) {
                 "bad_input=%u bad_guard=%u bad_output_pages=%04x first %s "
                 "index=%u expected=%08x got=%08x got_generation=%d\n",
                 pass, generations, result.bad_output, result.bad_input,
-                result.bad_guard, result.stale_page_mask, result.first.reason,
-                result.first.index, result.first.expected, result.first.got,
-                result.first.got_generation);
+                result.bad_guard, result.bad_output_page_mask,
+                result.first.reason, result.first.index, result.first.expected,
+                result.first.got, result.first.got_generation);
             if (!first.reason) {
                 first = result.first;
             }
