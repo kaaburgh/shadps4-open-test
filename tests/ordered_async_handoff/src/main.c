@@ -62,10 +62,6 @@ static uint64_t token(unsigned round) {
     return 0x4F52444552000000ULL | round; /* "ORDER" */
 }
 
-static inline void store_fence(void) {
-    __asm__ __volatile__("sfence" ::: "memory");
-}
-
 typedef struct {
     void* memory;
     uint32_t bytes;
@@ -91,17 +87,6 @@ static bool build_round(Dcb* dcb, void* memory, const StComputeShader* shader,
     dcb->memory = cmd.beginptr;
     dcb->bytes = (uint32_t)((uintptr_t)cmd.cmdptr - (uintptr_t)cmd.beginptr);
     return st_gnm_errors == 0;
-}
-
-static bool wait_label(volatile uint64_t* label, uint64_t value) {
-    for (unsigned ms = 0; ms < ST_EOP_WAIT_MS; ++ms) {
-        if (*label == value) {
-            st_compiler_barrier();
-            return true;
-        }
-        sceKernelUsleep(1000);
-    }
-    return false;
 }
 
 int main(void) {
@@ -158,7 +143,7 @@ int main(void) {
         }
         void* addrs[1] = {dcb.memory};
         uint32_t sizes[1] = {dcb.bytes};
-        st_compiler_barrier();
+        st_store_fence();
         const int32_t res =
             sceGnmSubmitCommandBuffers(1, addrs, sizes, NULL, NULL);
         if (res < 0) {
@@ -196,11 +181,11 @@ int main(void) {
         for (uint32_t i = 0; i < REGION_WORDS; ++i) {
             in[r][i] = expected_in[i];
         }
-        store_fence();
+        st_store_fence();
         *go = round;
-        store_fence();
+        st_store_fence();
 
-        if (!wait_label(&done[r], token(round))) {
+        if (!st_wait_label(&done[r], token(round))) {
             return st_fail("reason=eop_timeout round=%u", round);
         }
 
