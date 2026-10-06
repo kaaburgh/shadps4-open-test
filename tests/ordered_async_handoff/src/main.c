@@ -30,7 +30,7 @@
 
 enum {
     ROUNDS = 4,
-    REGION_BYTES = 16 * 1024,
+    REGION_BYTES = 32 * 1024,
     REGION_WORDS = REGION_BYTES / sizeof(uint32_t),
     GROUPS_X = REGION_WORDS / ST_LOCAL_SIZE_X,
     BINDINGS = 2,
@@ -40,6 +40,11 @@ enum {
 
 _Static_assert(REGION_WORDS % ST_LOCAL_SIZE_X == 0,
                "regions must be whole workgroups");
+/* shadPS4 copies read-only bindings of up to 16 KiB (STREAM_THRESHOLD) from
+ * guest memory when the dispatch runs, so an early upload of in[r] through
+ * its tracked buffers would go unnoticed. */
+_Static_assert(REGION_BYTES > 16 * 1024,
+               "regions must be larger than shadPS4's stream threshold");
 
 static const uint32_t INPUT_POISON = 0x9a9a9a9au;
 static const uint32_t OUTPUT_POISON = 0xcdcdcdcdu;
@@ -156,7 +161,9 @@ int main(void) {
         return st_fail("reason=submit_done res=0x%x", (unsigned)done_res);
     }
 
-    /* Nothing may complete before its release. */
+    /* Nothing may complete before its release. 20 ms is enough for the GPU
+     * (or shadPS4 on lavapipe) to reach the first wait; a host that ignores
+     * the wait but is slower than that is still caught after each round. */
     sceKernelUsleep(20 * 1000);
     for (unsigned r = 0; r < ROUNDS; ++r) {
         if (done[r] != 0) {
