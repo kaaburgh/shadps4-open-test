@@ -49,6 +49,8 @@ typedef struct {
     uint32_t b_offset;
 } Layout;
 
+/* Offsets into the window; A and B are REGION_BYTES (0x400) each and pages
+ * are 0x1000. */
 static const Layout LAYOUTS[] = {
     /* Control: A and B on different pages, with a guard page between. */
     {"separate_pages", 0x0000, 0x2000},
@@ -64,6 +66,8 @@ enum { LAYOUT_COUNT = sizeof(LAYOUTS) / sizeof(LAYOUTS[0]) };
 
 _Static_assert(REGION_WORDS % ST_LOCAL_SIZE_X == 0,
                "regions must be whole workgroups");
+_Static_assert(REGION_BYTES == 0x400 && ST_PAGE_BYTES == 0x1000,
+               "the layout offsets assume 1 KiB regions and 4 KiB pages");
 
 static uint32_t guard_word(uint32_t salt, uint32_t window_word) {
     return 0x47554152u ^ (window_word * 0x9E3779B1u) ^ salt;
