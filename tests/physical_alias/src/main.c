@@ -27,17 +27,20 @@
  *                        B again, after B's view was already used.
  *   cpu_to_gpu_same      control: CPU writes R1 = P(3) through B; GPU reads
  *                        through B.
- *   gpu_to_cpu           GPU writes R2 through B; CPU reads through A, then
- *                        through B to tell an alias failure (only A stale)
- *                        from no readback at all (both stale).
- *   gpu_to_gpu           GPU reads R2 through A after the GPU write through B.
+ *   gpu_to_cpu           GPU writes R2 = generation 4 through B; CPU reads
+ *                        through A, then through B to tell an alias failure
+ *                        (only A stale) from no readback at all (both stale).
+ *   gpu_to_gpu           GPU writes R2 = generation 6 through B, then GPU
+ *                        reads R2 through A.
  *   gpu_to_cpu_same      control: GPU writes R3 through B; CPU reads through
  *                        B, then through A.
  *   guard                the guard region, read through B, never changes.
  *
- * Order matters: on shadPS4, any CPU read near B downloads every GPU write in
- * a 512 KiB window, which would hide the gpu_to_cpu and gpu_to_gpu failures.
- * Both GPU steps therefore run before the first CPU read through B.
+ * gpu_to_cpu and gpu_to_gpu each get their own GPU write, so the side effects
+ * of one observation (a readback, or a download done to serve a GPU alias
+ * read) cannot satisfy the other. Within each, nothing reads through B before
+ * the alias observation: on shadPS4 any CPU read near B downloads every GPU
+ * write in a 512 KiB window.
  *
  * Every case runs even after a failure.
  */
@@ -62,7 +65,7 @@ enum {
     GUARD_OFFSET = 3 * REGION_BYTES,
     GROUPS_X = REGION_WORDS / ST_LOCAL_SIZE_X,
     BINDINGS = 2,
-    TABLES = 6,
+    TABLES = 7,
     ARENA_BYTES = 2 * 1024 * 1024,
 };
 
@@ -209,17 +212,17 @@ int main(void) {
     GnmBuffer* tables = (GnmBuffer*)st_arena_alloc(
         &arena, TABLES * BINDINGS * sizeof(GnmBuffer), ST_PAGE_BYTES);
     volatile uint32_t* outputs[4];
-    volatile uint32_t* sources[2];
+    volatile uint32_t* sources[3];
     for (unsigned k = 0; k < 4; ++k) {
         outputs[k] = (volatile uint32_t*)st_arena_alloc(&arena, REGION_BYTES,
                                                         ST_PAGE_BYTES);
     }
-    for (unsigned k = 0; k < 2; ++k) {
+    for (unsigned k = 0; k < 3; ++k) {
         sources[k] = (volatile uint32_t*)st_arena_alloc(&arena, REGION_BYTES,
                                                         ST_PAGE_BYTES);
     }
     uint32_t* seen_a = (uint32_t*)malloc(REGION_BYTES);
-    if (!tables || !outputs[3] || !sources[1] || !seen_a) {
+    if (!tables || !outputs[3] || !sources[2] || !seen_a) {
         return st_fail("reason=arena_memory");
     }
 
@@ -265,10 +268,11 @@ int main(void) {
     for (uint32_t i = 0; i < REGION_WORDS; ++i) {
         sources[0][i] = pattern(4, i);
         sources[1][i] = pattern(5, i);
+        sources[2][i] = pattern(6, i);
     }
 
     /* Tables: R1(B) -> outputs[0..2]; sources[0] -> R2(B); sources[1] ->
-     * R3(B); R2(A) -> outputs[3]. */
+     * R3(B); R2(A) -> outputs[3]; sources[2] -> R2(B). */
     for (unsigned k = 0; k < 3; ++k) {
         tables[k * BINDINGS + 0] = st_raw_buffer(b_r1, REGION_BYTES);
         tables[k * BINDINGS + 1] = st_raw_buffer(outputs[k], REGION_BYTES);
@@ -279,6 +283,8 @@ int main(void) {
     tables[4 * BINDINGS + 1] = st_raw_buffer(b_r3, REGION_BYTES);
     tables[5 * BINDINGS + 0] = st_raw_buffer(a_r2, REGION_BYTES);
     tables[5 * BINDINGS + 1] = st_raw_buffer(outputs[3], REGION_BYTES);
+    tables[6 * BINDINGS + 0] = st_raw_buffer(sources[2], REGION_BYTES);
+    tables[6 * BINDINGS + 1] = st_raw_buffer(b_r2, REGION_BYTES);
 
     CaseResult cases[CASES] = {
         [CASE_CPU_ALIAS] = {.name = "cpu_alias"},
@@ -335,18 +341,12 @@ int main(void) {
     }
     check_transformed(&cases[CASE_CPU_TO_GPU_SAME], outputs[2], 3, "gpu_stale");
 
-    /* gpu_to_cpu, gpu_to_gpu: GPU writes R2 through B, then GPU reads R2
-     * through A. No CPU access in between (see the ordering note above). */
+    /* gpu_to_cpu: GPU writes R2 through B; read through A before anything
+     * reads through B. */
     if (!st_dispatch_and_wait(&queue, &shader, &tables[3 * BINDINGS],
                               GROUPS_X)) {
         return st_fail("reason=dispatch case=gpu_to_cpu");
     }
-    if (!st_dispatch_and_wait(&queue, &shader, &tables[5 * BINDINGS],
-                              GROUPS_X)) {
-        return st_fail("reason=dispatch case=gpu_to_gpu");
-    }
-
-    /* gpu_to_cpu: read through A before anything reads through B. */
     for (uint32_t i = 0; i < REGION_WORDS; ++i) {
         seen_a[i] = a_r2[i];
     }
@@ -368,9 +368,17 @@ int main(void) {
         }
     }
 
-    /* gpu_to_gpu: A's R2 must hold the GPU write made through B. */
+    /* gpu_to_gpu: a fresh GPU write through B (the backing may already hold
+     * generation 4 from the readback above), then the GPU reads R2 through A
+     * with no CPU access in between. */
+    if (!st_dispatch_and_wait(&queue, &shader, &tables[6 * BINDINGS],
+                              GROUPS_X) ||
+        !st_dispatch_and_wait(&queue, &shader, &tables[5 * BINDINGS],
+                              GROUPS_X)) {
+        return st_fail("reason=dispatch case=gpu_to_gpu");
+    }
     for (uint32_t i = 0; i < REGION_WORDS; ++i) {
-        const uint32_t expected = transform(transform(pattern(4, i), i), i);
+        const uint32_t expected = transform(transform(pattern(6, i), i), i);
         const uint32_t got = outputs[3][i];
         if (got == expected) {
             continue;
@@ -378,7 +386,8 @@ int main(void) {
         const char* reason = "mismatch";
         if (got == OUTPUT_POISON) {
             reason = "unwritten";
-        } else if (got == transform(block_fill(r2_word + i), i)) {
+        } else if (got == transform(block_fill(r2_word + i), i) ||
+                   got == transform(transform(pattern(4, i), i), i)) {
             reason = "gpu_stale_alias";
         }
         note(&cases[CASE_GPU_TO_GPU], reason, i, expected, got);
