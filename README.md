@@ -212,7 +212,7 @@ The host runner:
 - writes readbacks Precise into that config, or the mode given by
   `--readbacks precise|relaxed|disabled`;
 - sets `SHADPS4_UMA_SHARED_BACKING=1` with `--shared-backing` (UMA E3 research builds of
-  shadPS4);
+  shadPS4), and removes it from shadPS4's environment otherwise;
 - scans combined shadPS4 output for `SHADTEST`;
 - saves `out/gpu_solid_rt/run.log`;
 - returns 0 for guest PASS, 1 for guest FAIL, and 2 for infrastructure/no-marker failure;
@@ -252,6 +252,13 @@ On UMA research builds of shadPS4, `SHADPS4_UMA_E0_CAPTURE=<new dir>` records ev
 BufferCache decision, and `scripts/census-buffer-paths.py <dir> name=<start>-<end> ...` shows
 whether a guest range was served from the shared backing, the mirror or the stream buffer, or
 not obtained at all.
+
+The shared-backing expectations of the E3 scenario tests assume 16 KiB BufferCache blocks, as
+on lavapipe. shadPS4 sizes the blocks from the Vulkan sparse-buffer alignment, often 64 KiB on
+hardware drivers, and shares a range only if every page of the blocks around it is mapped and
+physically contiguous. With larger blocks, the 16-32 KiB mappings that the tests expect to be
+shared fall back to the mirror, and those cases are not diagnostic; the census shows which path
+they took.
 
 ## Why raw ELF
 

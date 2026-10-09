@@ -106,8 +106,12 @@ def main() -> int:
         return 2
 
     env = os.environ.copy()
+    # The flag is the only switch: an exported variable would otherwise turn
+    # every "mirror" run of run-matrix.sh into a shared one.
     if args.shared_backing:
         env["SHADPS4_UMA_SHARED_BACKING"] = "1"
+    else:
+        env.pop("SHADPS4_UMA_SHARED_BACKING", None)
     if not args.use_host_config:
         xdg_root = run_dir / "xdg-data"
         config = write_isolated_config(xdg_root, args.readbacks)
