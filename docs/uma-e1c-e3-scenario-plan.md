@@ -1,6 +1,8 @@
 # E1C and E3-gap scenario plan
 
-Status: **plan only**. No test code has been written for any scenario below.
+Status: **M0 and M1 implemented** (kaaburgh/shadps4-open-test#17 – #24, measured on shadPS4
+`8d07f08`); M2 and M3 are still plans. Where an M1 measurement contradicted a hypothesis, the
+text below says so and gives the measured result.
 
 This plan extends the memory/UMA test roadmap (kaaburgh/shadps4-open-test#2, stages 0–10). It
 adds guest workloads for the two areas the current suite does not reach:
@@ -193,8 +195,11 @@ records the actual results in all six configurations, as stages 6 and 8 did.
 **Oracle via** says how the checked values reach the guest:
 - **CP**: a packet or the CPU-side DMA path writes guest memory directly, so the value is
   checkable in every mode;
-- **shader** or **RT**: a shader or render-target output, checkable only where GPU writes reach
-  the guest (mirror Precise, shared backing).
+- **shader**: a shader output, checkable only where GPU writes reach the guest (mirror Precise,
+  shared backing);
+- **RT**: a linear render-target output. shadPS4 also reads it back through its linear-image
+  readback (`readback_linear_images_enabled`, which the runner's isolated config turns on),
+  which the readbacks mode does not control; measured in B5.
 
 Relaxed is expected to match Disabled: the current suite gives the same results in both modes
 for mirror and for shared. **Mirror Precise is the reference baseline.** Where it fails for a
@@ -209,7 +214,7 @@ infrastructure.
 | A1 | `write_data_order` | E1C | `WRITE_DATA` between two readers | shader (`X`: CP) | P1 | PM4 | ✓ | R (`X` ✓) | ✗ #11 | ✗ #11 |
 | A2 | `wait_gpu_written` | E1C | `WAIT_REG_MEM` on a shader-written flag, same queue | CP label + shader | P2 | — | ✓ | R hang | ✓ | ✓ |
 | A3 | `cond_exec_gpu_predicate` | E1C | `COND_EXEC` on a shader-written predicate | CP | P1 | PM4 | ✓ | R | ✗ #11 | ✗ #11 |
-| A4 | `dma_order` | E1C/E3 | `DMA_DATA` copy/fill around dispatches; fill + wait | per case | P1 | — (+PM4 for `raw_wait`) | ✓ (d: ?) | R (a, b), ✓ (c), R hang (d) | ✓ | ✓ |
+| A4 | `dma_order` | E1C/E3 | `DMA_DATA` copy/fill around dispatches; fill + wait | per case | P1 | — (+PM4 for `raw_wait`) | ✓ | R (a, b), ✓ (c), R hang (d) | ✓ | ✓ |
 | A5 | `gds_store` | E1C | GDS ← `DMA_DATA`; EOS GDS store (gfx); `RELEASE_MEM` GDS store (compute) | CP (gfx); GPU copy in shadPS4 (compute) | P2 | PM4, ASC | ✓ | ✓ (gfx), R (compute) | ✓ / ✗ early IRQ | ✓ / ✗ early IRQ |
 | A6 | `gpu_written_descriptor` | E1C | A dispatch writes a V# that the next dispatch reads its data through | shader | P2 | — | ✓ | R | ✗ #11 | ✗ #11 |
 | A7 | `mem_semaphore_handoff` | E1C | `MEM_SEMAPHORE` producer/consumer across queues | shader | P3 | PM4, ASC | ✓ | R | ✓ | ✓ |
@@ -217,8 +222,8 @@ infrastructure.
 | B1 | `dma_alias_order` | E3 | DMA through a second VA of memory a dispatch writes via the first | shader / CP | P1 | placement | ✗ #5 | R | ✓ (shareable alias), ✗ #8 (non-contiguous alias) | same |
 | B2 | `dma_mixed_endpoints` | E3 | DMA copy shareable source → mirror-only destination | CP | P1 | placement | ✓ | ✓ | ✓ | ✓ |
 | B3 | `demotion_divergence` | E3 | A block bound shared, then demoted while the same dispatch still writes it through the chunk | shader | P2 | placement | ✓ | R | ✗ #7 | ✗ #7 |
-| B4 | `fallback_in_shared` | E3 | Chunk-crossing and non-contiguous ranges under shared backing | shader | P1 | placement | ✓ | R | ✓ | R (fallback ranges; control ✓) |
-| B5 | `image_source_same_submit` | E3 | Compute writes, then a draw initializes its RT from those bytes in the same submit | RT | P1 | — | ✗ #4 | R | ✓ | ✓ |
+| B4 | `fallback_in_shared` | E3 | Chunk-crossing and non-contiguous ranges under shared backing | shader | P1 | placement | ✗ #14 (non-contiguous) | R | ✗ #14 (non-contiguous) | R (fallback ranges; control ✓) |
+| B5 | `image_source_same_submit` | E3 | Compute writes, then a draw initializes its RT from those bytes in the same submit | RT | P1 | — | ✗ #4 | ✓ | ✓ | ✓ |
 | B6 | `cross_queue_wait` | E3/E1C | GFX `WAIT_REG_MEM` on a flag an ASC dispatch writes, producer parsed later | CP label + shader | P2 | ASC | ✓ | R hang | ✓ | ✓ |
 | B7 | `bda_remap` | E3 | BDA read across unmap/remap | shader | spike | `directMemoryAccess`, shader | ? | R | ? | ? |
 
@@ -330,8 +335,10 @@ There are four cases:
   - Mirror Precise ✓: A uploads at record time, the CPU fill marks the page CPU-modified, and B
     uploads again.
   - Mirror Relaxed/Disabled: R.
-  - Shared ✓ since `a393f8d`, where the fill moved to the GPU timeline. Before that commit the
-    fill ran on the CPU at parse time and A read 5 (✗).
+  - Shared ✓. **Measured:** this holds before `a393f8d` too (`7c05b88` passes). Dispatch A's own
+    binding makes `R` shared before the fill is parsed, so even the old `IsRegionShared` guard
+    sends the fill to the GPU. The pre-`a393f8d` failure needs a second VA; B1 covers it, and A4
+    is a regression guard.
 - **c.** DMA fill `flag` into memory that is not GPU-modified, then `WAIT_REG_MEM flag`.
   - No shader is involved and the oracle is the CP-written label, so this case is diagnostic in
     every mode.
@@ -340,7 +347,7 @@ There are four cases:
   L2 line cannot later overwrite the DMA write.
   - Mirror Relaxed/Disabled: R hang. `flag` is GPU-modified, so the fill runs on the GPU into the
     arena.
-  - Mirror Precise ?.
+  - Mirror Precise ✓ (measured: the CP-thread read of the GPU-modified flag downloads it).
   - Shared ✓.
 
 **Optional.** A raw `DMA_DATA` with `raw_wait`, chaining DMA1 `X → Y` and DMA2 `Y → Z`.
@@ -460,9 +467,11 @@ flush).
 - fill: 2 through `A` and through all of `B`;
 - copy: `D` holds 1 where `B` aliases `P`, and `Q`'s initial contents for `B[1]`.
 
-**Shared/fallback decision.** Each run records from the shadPS4 log whether `B` took the shared
-path or the mirror fallback. A non-contiguous case that stayed shareable does not count as
-covering #8.
+**Shared/fallback decision.** shadPS4 logs `falls back to the mirror` only when it demotes blocks
+that were shared, so the decision is read from a UMA census capture instead
+(`scripts/census-buffer-paths.py`). A non-contiguous case that stayed shareable does not count as
+covering #8. Measured (shared Disabled): contiguous `B` is shared; non-contiguous `B` is never
+obtained by the fill (CPU fast path) and is a mirror read for the copy.
 
 **Control.** The same sequence through a single VA (`B == A`). It passes in mirror Precise and
 is the reference for the mirror columns.
@@ -548,7 +557,11 @@ with vertex buffers and BDA respectively.
 3. The CPU verifies.
 
 **Expected.**
-- Mirror Precise and shared Precise ✓.
+- Mirror Precise and shared Precise ✓ for `chunk_straddle` and the control. **Measured:** the
+  non-contiguous range fails in both (kaaburgh/shadPS4#14). Readback writes guest memory through
+  `MemoryManager::TryWriteBacking`, which never advances its source pointer, so every VMA after
+  the first in one readback receives the start of the buffer. A build with the one-line fix
+  passes.
 - Mirror Relaxed/Disabled: R.
 - Shared Relaxed/Disabled:
   - the fallback ranges: R. They behave like mirror Disabled, so the GPU writes never reach the
@@ -574,7 +587,9 @@ the CPU at record time).
 3. An R-only draw goes to a linear RT over `M`.
 4. EOP with a CB flush (`FLUSH_AND_INV_CB_DATA_TS`, as `image_buffer_alias` uses).
 
-**Oracle.** R = 90, and G/B/A keep the compute values (RT output).
+**Oracle.** R = 90, and G/B/A keep the compute values (RT output). **Measured:** mirror
+Relaxed/Disabled pass, through the linear-image readback (see **Oracle via**), so they are
+diagnostic here rather than R.
 
 **Control.** The CPU writes `M` instead of compute, as `image_buffer_alias` case
 `rt_masked_after_cpu_write` does. It passes in mirror Precise.
@@ -582,9 +597,9 @@ the CPU at record time).
 **Expected.**
 - Mirror Precise ✗ #4. This is `image_buffer_alias` case `rt_masked_after_buffer_write` in one
   DCB, and that case fails in mirror Precise at `8d07f08` (suite run for kaaburgh/shadPS4#6).
-- Mirror Relaxed/Disabled: R.
+- Mirror Relaxed/Disabled ✓ (measured; linear-image readback, see the oracle above).
 - Shared ✓: the multi-submit case passes in all three readbacks modes.
-- The guard mutant fails in shared mode.
+- The guard mutant fails in shared mode (measured: `rt_saw_stale_memory`).
 
 ### B6 `cross_queue_wait`
 
@@ -642,8 +657,11 @@ blocks).
 Each test lands as its own PR, like stages 1–10. The PR title says when the test fails on the
 reference shadPS4.
 
-1. **M0** — raw PM4 builders, placement helper, runner shared-mode switch.
-2. **M1 (P1)** — A1, A3, A4, B1, B2, B4, B5. All on the GFX queue, no new shader features.
+1. **M0** — raw PM4 builders, placement helper, runner shared-mode switch
+   (kaaburgh/shadps4-open-test#17). The `EVENT_WRITE_EOS`, `RELEASE_MEM`, `MEM_SEMAPHORE` and raw
+   `DMA_DATA` builders and the ASC helper move to the milestones whose tests validate them.
+2. **M1 (P1)** — A1, A3, A4, B1, B2, B4, B5. All on the GFX queue, no new shader features
+   (kaaburgh/shadps4-open-test#18 – #24).
 3. **M2 (P2)** — A2, A6, A5 (gfx), B3. Then the ASC helper, A5 (compute) and B6.
 4. **M3** — A7, A8 and the B7 spike.
 
@@ -657,5 +675,6 @@ reference shadPS4.
 | kaaburgh/shadPS4#8 (per-VA tracking) | B1 non-contiguous |
 | kaaburgh/shadPS4#11 (E1C parse-time access) | A1, A3, A6 |
 | kaaburgh/shadPS4#12 (fallbacks, partial unmap) | B4, B7 |
+| kaaburgh/shadPS4#14 (readback across VMAs) | B4 (Precise), B2 on pre-`8d07f08` builds |
 | kaaburgh/shadPS4#13 (uncovered guards) | B2, B5, B6, B7, A4 |
 | new: fallback under shared + Disabled | B4 |
