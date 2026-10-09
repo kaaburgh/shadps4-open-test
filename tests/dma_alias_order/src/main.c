@@ -11,7 +11,8 @@
  *   EOP
  *
  * Mappings (each case gets its own physical pages):
- *   contiguous     P mapped at A and at B (16 KiB each). B can be shared.
+ *   contiguous     P mapped at A and at B (16 KiB each). B can be shared
+ *                  (see Scope below).
  *   noncontiguous  B is two adjacent 16 KiB virtual pages: B[0] maps P, as A
  *                  does, B[1] maps Q, which is not physically adjacent to P.
  *                  The DMA spans both, so shadPS4 cannot serve B from the
@@ -22,6 +23,14 @@
  * Oracles:
  *   fill  A and all of B read FILL.
  *   copy  D holds pattern 1 for B[0] and Q's initial contents for B[1].
+ *
+ * Scope: the shared-backing expectations hold only with 16 KiB BufferCache
+ * blocks, as on lavapipe. shadPS4 sizes the blocks from the Vulkan
+ * sparse-buffer alignment (often 64 KiB on hardware drivers) and shares a
+ * range only if every page of the blocks around it is mapped and physically
+ * contiguous, which one mapped 16 KiB page is not. With larger blocks A and B
+ * both fall back to the mirror in every case, and the shared-backing results
+ * are not diagnostic; scripts/census-buffer-paths.py shows the path taken.
  *
  * shadPS4 tracks buffers per guest VA. With the mirror, the dispatch's write
  * through A lives in A's mirror while the DMA uses B (kaaburgh/shadPS4#5).
@@ -163,6 +172,8 @@ static void check_copy(StCase* c, const Views* v, const volatile uint32_t* d) {
 
 int main(void) {
     st_begin();
+    printf("note: the shared-backing expectations assume 16 KiB BufferCache "
+           "blocks (lavapipe)\n");
 
     StArena arena;
     if (!st_arena_init(&arena, ARENA_BYTES)) {
