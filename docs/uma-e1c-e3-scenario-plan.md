@@ -214,7 +214,7 @@ infrastructure.
 | A6 | `gpu_written_descriptor` | E1C | A dispatch writes a V# that the next dispatch reads its data through | shader | P2 | — | ✓ | R | ✗ #11 | ✗ #11 |
 | A7 | `mem_semaphore_handoff` | E1C | `MEM_SEMAPHORE` producer/consumer across queues | shader | P3 | PM4, ASC | ✓ | R | ✓ | ✓ |
 | A8 | `ce_dump_const_ram` | E1C | CE `DUMP_CONST_RAM` vs DE readers | shader | P3 | CCB + PM4 | ? | R | ? | ? |
-| B1 | `dma_alias_order` | E3 | DMA through a second VA of memory a dispatch writes via the first | shader / CP | P1 | — | ✗ #5 | R | ✓ (shareable alias), ✗ #8 (non-contiguous alias) | same |
+| B1 | `dma_alias_order` | E3 | DMA through a second VA of memory a dispatch writes via the first | shader / CP | P1 | placement | ✗ #5 | R | ✓ (shareable alias), ✗ #8 (non-contiguous alias) | same |
 | B2 | `dma_mixed_endpoints` | E3 | DMA copy shareable source → mirror-only destination | CP | P1 | placement | ✓ | ✓ | ✓ | ✓ |
 | B3 | `demotion_divergence` | E3 | A block bound shared, then demoted while the same dispatch still writes it through the chunk | shader | P2 | placement | ✓ | R | ✗ #7 | ✗ #7 |
 | B4 | `fallback_in_shared` | E3 | Chunk-crossing and non-contiguous ranges under shared backing | shader | P1 | placement | ✓ | R | ✓ | R (fallback ranges; control ✓) |
@@ -437,27 +437,43 @@ CE/DE counter handling is traced.
 physical page through VA `A` (P1 in the E3 review; its counterexample already had a CS partial
 flush).
 
+**Mappings** (placement helper):
+- **contiguous:** one 16 KiB physical page `P` is mapped at VA `A` and at VA `B`.
+- **non-contiguous:** `B` covers two adjacent 16 KiB virtual pages. `B[0]` aliases `P`, as `A`
+  does. `B[1]` maps a separate allocation `Q` that is not physically adjacent to `P`. The DMA
+  range spans both pages, so `LookupSharedBlocks` fails for it.
+
+  A single-page alias cannot reach #8 on lavapipe: a BufferCache block there is 16 KiB, the
+  same as a backing page, so such an alias is always contiguous and stays shareable. The
+  two-page layout fails the lookup at any block size, because the range always includes the
+  discontinuity.
+
 **Sequence.**
-1. One physical page is mapped at VA `A` and at VA `B`.
-2. A dispatch writes `v = 1` through `A`.
-3. **[B]**: the dispatch has finished, and no dirty L2 line can later overwrite the DMA write.
-4. One of two operations:
+1. A dispatch writes `v = 1` through `A`.
+2. **[B]**: the dispatch has finished, and no dirty L2 line can later overwrite the DMA write.
+3. One of two operations, over the whole of `B`:
    - **fill:** DMA fill through `B` with 2;
    - **copy:** DMA copy `B → D`.
-5. EOP; the CPU reads through `A` and `B` (fill) or reads `D` (copy).
+4. EOP; the CPU reads through `A` and `B` (fill) or reads `D` (copy).
 
 **Oracle.**
-- fill: 2 through both VAs;
-- copy: `D == 1`.
+- fill: 2 through `A` and through all of `B`;
+- copy: `D` holds 1 where `B` aliases `P`, and `Q`'s initial contents for `B[1]`.
+
+**Shared/fallback decision.** Each run records from the shadPS4 log whether `B` took the shared
+path or the mirror fallback. A non-contiguous case that stayed shareable does not count as
+covering #8.
 
 **Control.** The same sequence through a single VA (`B == A`). It passes in mirror Precise and
 is the reference for the mirror columns.
 
 **Cases.**
-- **contiguous:** `B` is physically contiguous, so it can be shared.
+- **contiguous:** `B` can be shared.
   - Shared ✓ since `a393f8d`.
   - Mirror Precise ✗: aliases diverge (kaaburgh/shadPS4#5). Mirror Relaxed/Disabled: R.
-- **non-contiguous:** `B` cannot be shared. The CPU fast path runs at parse time.
+- **non-contiguous:** `B` cannot be shared. shadPS4 accesses `P` through `B` while recording,
+  before the dispatch through `A` has run: the fill takes the CPU fast path, and the copy
+  uploads `B`'s mirror from guest memory.
   - Shared ✗ (kaaburgh/shadPS4#8).
 
 ### B2 `dma_mixed_endpoints`
