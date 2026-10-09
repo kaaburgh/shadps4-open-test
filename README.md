@@ -209,6 +209,10 @@ SHADPS4=/path/to/shadPS4/build/shadps4 \
 The host runner:
 
 - uses an isolated shadPS4 config unless `--use-host-config` is passed;
+- writes readbacks Precise into that config, or the mode given by
+  `--readbacks precise|relaxed|disabled`;
+- sets `SHADPS4_UMA_SHARED_BACKING=1` with `--shared-backing` (UMA E3 research builds of
+  shadPS4);
 - scans combined shadPS4 output for `SHADTEST`;
 - saves `out/gpu_solid_rt/run.log`;
 - returns 0 for guest PASS, 1 for guest FAIL, and 2 for infrastructure/no-marker failure;
@@ -230,6 +234,18 @@ This starts a private Xvfb, selects the lavapipe Vulkan ICD and runs the same ho
 Xvfb picks a free display (set `XVFB_DISPLAY=:N` to pin one) and reports it once it accepts
 connections; the script waits for Xvfb to exit afterwards, so runs can be started back to back.
 If Xvfb does not start, the script exits 2 (infrastructure failure).
+
+### All six configurations
+
+```bash
+SHADPS4=/path/to/shadPS4/build/shadps4 bash scripts/run-matrix.sh pm4_controls
+```
+
+This runs one test with mirror and shared backing, each with readbacks Precise, Relaxed and
+Disabled (the configurations of [the E1C/E3 scenario plan](docs/uma-e1c-e3-scenario-plan.md)),
+through `scripts/run-test-lavapipe.sh` unless `RUNNER` names another launcher. Each run's
+output is kept in `out/<test>/matrix-<backing>-<readbacks>.log`. The summary prints the
+runner's exit status, the result marker and how often shadPS4 logged a shared-backing fallback.
 
 ## Why raw ELF
 
@@ -287,11 +303,17 @@ Compute/buffer tests can share two files in [tests/common/](tests/common/):
   it. `src/main.c` becomes `out/<name>/<name>.elf`, and each `assets/<shader>.comp.glsl` becomes
   `out/<name>/assets/<shader>.comp.sb`.
 - `shadtest_guest.h`: header-only guest helpers. They provide:
-  - the result marker;
+  - the result marker, and per-case bookkeeping that ends in one marker (`StCase`);
   - a CPU+GPU read-write Garlic direct-memory arena;
   - compute shader loading;
   - raw-buffer V#s for the [psbc resource ABI](docs/psbc-resource-abi.md);
-  - one dispatch per submission, waiting on a fresh end-of-pipe label value.
+  - one dispatch per submission, waiting on a fresh end-of-pipe label value;
+  - submissions of several dispatches, DMA and raw PM4 packets (`StDcb`);
+  - direct memory at chosen physical offsets, and pages from separate physical offsets mapped
+    back to back.
+- `shadtest_pm4.h`: raw PM4 packets OpenGNM has no emitter for: the barrier and `PFP_SYNC_ME`
+  of the scenario plan's guest synchronization contract, `WRITE_DATA` and `COND_EXEC`.
+  `scripts/test-pm4.sh` pins every dword on the host.
 
 Future tests should remain small and independent. When a bug is first found in a commercial
 game, the preferred long-term regression artifact is a minimized open guest reproducer rather
