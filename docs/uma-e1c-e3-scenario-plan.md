@@ -142,6 +142,12 @@ no-ops:
 
 They are not submit points either, which B6 depends on.
 
+**Hardware validity is not proven yet.** The host self-test and the lavapipe runs check the raw
+dwords against shadPS4's parser, not against Liverpool. In particular, `COND_EXEC` uses
+shadPS4's 3-dword body, which is unconfirmed for Liverpool (Mesa's GFX8+ packet has 4 dwords).
+Until a hardware run, a failure in A3, or in any scenario built on new raw packets, is a shadPS4
+result, not a proven PS4/GCN fidelity regression.
+
 Sequences below mark the barriers as **[B]** and **[P]**.
 
 ## Common infrastructure (milestone M0)
@@ -572,8 +578,9 @@ B4 does not test ordering. It documents that shared backing does not lift the re
 limitation for ranges that fall back. It becomes a regression test once fallback ranges stop
 losing writes (kaaburgh/shadPS4#12).
 
-"Shared Disabled 11/11" holds today only because the suite never falls back. This limitation is
-not recorded in any issue yet; the test would document it, and an issue should follow.
+"Shared Disabled 11/11" holds today only because the suite never falls back. kaaburgh/shadPS4#12
+tracks the fallbacks; [a comment there](https://github.com/kaaburgh/shadPS4/issues/12#issuecomment-6087837516)
+records that in Relaxed/Disabled they also lose GPU writes, as B4 measures.
 
 ### B5 `image_source_same_submit`
 
@@ -598,7 +605,8 @@ diagnostic here rather than R.
 - Mirror Precise ✗ #4. This is `image_buffer_alias` case `rt_masked_after_buffer_write` in one
   DCB, and that case fails in mirror Precise at `8d07f08` (suite run for kaaburgh/shadPS4#6).
 - Mirror Relaxed/Disabled ✓ (measured; linear-image readback, see the oracle above).
-- Shared ✓: the multi-submit case passes in all three readbacks modes.
+- Shared ✓ in all three readbacks modes (measured), as the multi-submit `image_buffer_alias`
+  case already was.
 - The guard mutant fails in shared mode (measured: `rt_saw_stale_memory`).
 
 ### B6 `cross_queue_wait`
