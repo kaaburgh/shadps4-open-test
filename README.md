@@ -245,7 +245,13 @@ This runs one test with mirror and shared backing, each with readbacks Precise, 
 Disabled (the configurations of [the E1C/E3 scenario plan](docs/uma-e1c-e3-scenario-plan.md)),
 through `scripts/run-test-lavapipe.sh` unless `RUNNER` names another launcher. Each run's
 output is kept in `out/<test>/matrix-<backing>-<readbacks>.log`. The summary prints the
-runner's exit status, the result marker and how often shadPS4 logged a shared-backing fallback.
+runner's exit status, the result marker and how often shadPS4 demoted shared blocks to the
+mirror.
+
+On UMA research builds of shadPS4, `SHADPS4_UMA_E0_CAPTURE=<new dir>` records every
+BufferCache decision, and `scripts/census-buffer-paths.py <dir> name=<start>-<end> ...` shows
+whether a guest range was served from the shared backing, the mirror or the stream buffer, or
+not obtained at all.
 
 ## Why raw ELF
 

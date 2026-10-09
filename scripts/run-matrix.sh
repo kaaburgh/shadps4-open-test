@@ -7,8 +7,9 @@
 # RUNNER selects the launcher (default: scripts/run-test-lavapipe.sh). Each run's
 # output is kept in out/<test>/matrix-<backing>-<readbacks>.log. The summary
 # prints the runner's exit status, the HOST_RESULT line and how many times
-# shadPS4 logged a shared-backing fallback ("falls back to the mirror", UMA E3
-# research builds only).
+# shadPS4 demoted shared blocks to the mirror ("falls back to the mirror", UMA
+# E3 research builds only). A range that is mirrored from the start logs
+# nothing; scripts/census-buffer-paths.py shows those decisions.
 set -uo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -28,9 +29,9 @@ for backing in mirror shared; do
         rc=$?
         [[ $rc -eq 2 ]] && status=2
         result="$(grep -o 'HOST_RESULT.*' "$log" | tail -n 1 | cut -c1-160)"
-        fallbacks="$(grep -c 'falls back to the mirror' "$log")"
-        printf '%-6s %-8s rc=%d fallbacks=%-3s %s\n' "$backing" "$readbacks" "$rc" \
-            "$fallbacks" "${result:-<no marker>}"
+        demotions="$(grep -c 'falls back to the mirror' "$log")"
+        printf '%-6s %-8s rc=%d demotions=%-3s %s\n' "$backing" "$readbacks" "$rc" \
+            "$demotions" "${result:-<no marker>}"
     done
 done
 exit "$status"
