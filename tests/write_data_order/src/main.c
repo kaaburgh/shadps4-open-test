@@ -18,9 +18,11 @@
  *
  * Cases:
  *   large_a / large_b   X is a 32 KiB read-only SSBO (tracked BufferCache
- *                       path); outA / outB checked.
- *   small_a / small_b   X is a 4 KiB UBO (shadPS4 copies read-only bindings up
- *                       to 16 KiB into its stream buffer while recording).
+ *                       path in the mirror); outA / outB checked.
+ *   small_a / small_b   X is a 4 KiB UBO (in the mirror, shadPS4 copies
+ *                       read-only bindings up to 16 KiB into its stream buffer
+ *                       while recording). With shared backing both X variants
+ *                       are bound from the shared backing.
  *   cpu_control         control: the same words written by the CPU between
  *                       two submissions.
  *   x_values            the final contents of every X. WRITE_DATA writes guest
