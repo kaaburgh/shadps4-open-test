@@ -144,7 +144,8 @@ They are not submit points either, which B6 depends on.
 
 **Hardware validity is not proven yet.** The host self-test and the lavapipe runs check the raw
 dwords against shadPS4's parser, not against Liverpool. In particular, `COND_EXEC` uses
-shadPS4's 3-dword body, which is unconfirmed for Liverpool (Mesa's GFX8+ packet has 4 dwords).
+shadPS4's 3-dword body, which is unconfirmed for Liverpool: Mesa emits 4 dwords from GFX7 on,
+Liverpool's generation, and 3 only on GFX6.
 Until a hardware run, a failure in A3, or in any scenario built on new raw packets, is a shadPS4
 result, not a proven PS4/GCN fidelity regression.
 
@@ -592,7 +593,8 @@ the CPU at record time).
 2. **[B]** with a CB invalidate. On GFX7 the CB does not access memory through L2, so the
    compute data must be written back before the partial-mask draw reads `M`.
 3. An R-only draw goes to a linear RT over `M`.
-4. EOP with a CB flush (`FLUSH_AND_INV_CB_DATA_TS`, as `image_buffer_alias` uses).
+4. EOP with a CB flush. The test uses the harness EOP, `CACHE_FLUSH_AND_INV_TS_EVENT`, which
+   also flushes the CB (`image_buffer_alias` uses `FLUSH_AND_INV_CB_DATA_TS`).
 
 **Oracle.** R = 90, and G/B/A keep the compute values (RT output). **Measured:** mirror
 Relaxed/Disabled pass, through the linear-image readback (see **Oracle via**), so they are
