@@ -5,6 +5,7 @@ on:
     paths:
       - "tests/**"
       - "scripts/build-test.sh"
+      - "scripts/test-pm4.sh"
       - "scripts/bootstrap-deps.sh"
       - "deps.lock"
       - "patches/opengnm-psbc/**"
@@ -26,6 +27,9 @@ jobs:
 
       - name: Bootstrap pinned dependencies
         run: bash scripts/bootstrap-deps.sh
+
+      - name: Check the raw PM4 builders
+        run: bash scripts/test-pm4.sh
 
       - name: Build every guest workload in this checkout
         run: |

@@ -8,8 +8,10 @@
  * What lives here is the plumbing that every buffer test needs and that is
  * not itself under test: the SHADTEST marker, OpenGNM message accounting, a
  * direct-memory arena, loading an opengnm-psbc compute shader, raw buffer
- * V#s for the psbc set-0 resource ABI (docs/psbc-resource-abi.md), and one
- * dispatch + end-of-pipe wait per submission.
+ * V#s for the psbc set-0 resource ABI (docs/psbc-resource-abi.md), one
+ * dispatch + end-of-pipe wait per submission, multi-packet submissions with
+ * the raw PM4 packets of shadtest_pm4.h, and direct memory placed at chosen
+ * physical offsets and virtual addresses.
  */
 #ifndef SHADTEST_GUEST_H
 #define SHADTEST_GUEST_H
@@ -36,6 +38,8 @@
 #include <gnm_shaderbinary.h>
 #include <gnm_types.h>
 #include <gnmdriver.h>
+
+#include "shadtest_pm4.h"
 
 #ifndef ORBIS_KERNEL_WC_GARLIC
 #define ORBIS_KERNEL_WC_GARLIC 3
@@ -149,6 +153,83 @@ static inline bool st_wait_label(const volatile uint64_t* label,
         sceKernelUsleep(1000);
     }
     return false;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Cases: per-case first mismatch, then one terminal marker                  */
+/* ------------------------------------------------------------------------ */
+
+typedef struct {
+    const char* name;
+    const char* reason; /* first mismatch; NULL while the case passes */
+    unsigned bad_words;
+    uint32_t index;
+    uint32_t expected;
+    uint32_t got;
+} StCase;
+
+static inline void st_case_note(StCase* c, const char* reason, uint32_t index,
+                                uint32_t expected, uint32_t got) {
+    if (!c->reason) {
+        c->reason = reason;
+        c->index = index;
+        c->expected = expected;
+        c->got = got;
+    }
+    c->bad_words += 1;
+}
+
+static inline void st_case_expect(StCase* c, const char* reason,
+                                  uint32_t index, uint32_t expected,
+                                  uint32_t got) {
+    if (got != expected) {
+        st_case_note(c, reason, index, expected, got);
+    }
+}
+
+/* Prints one line per case, then emits the terminal marker: FAIL with the
+ * first failing case and the list of all failing ones, or PASS followed by
+ * pass_detail. Returns the test's exit status. */
+static inline int st_finish_cases(const StCase* cases, unsigned count,
+                                  const char* pass_detail) {
+    unsigned failed = 0;
+    const StCase* first = NULL;
+    char failed_names[160] = "";
+    for (unsigned k = 0; k < count; ++k) {
+        const StCase* c = &cases[k];
+        if (!c->reason) {
+            printf("case %s: ok\n", c->name);
+            continue;
+        }
+        printf("case %s: FAIL bad_words=%u first %s index=%u expected=%08x "
+               "got=%08x\n",
+               c->name, c->bad_words, c->reason, c->index, c->expected,
+               c->got);
+        failed += 1;
+        if (!first) {
+            first = c;
+        }
+        const size_t used = strlen(failed_names);
+        snprintf(failed_names + used, sizeof(failed_names) - used, "%s%s",
+                 used ? "," : "", c->name);
+    }
+
+    if (st_gnm_errors != 0) {
+        return st_fail("reason=gnm_error count=%u", st_gnm_errors);
+    }
+    if (first) {
+        return st_fail(
+            "reason=%s case=%s index=%u expected=%08x got=%08x failed_cases=%u "
+            "failed=%s",
+            first->reason, first->name, first->index, first->expected,
+            first->got, failed, failed_names);
+    }
+    if (pass_detail && pass_detail[0]) {
+        st_emit_marker("PASS", "cases=%u %s", count, pass_detail);
+    } else {
+        st_emit_marker("PASS", "cases=%u", count);
+    }
+    return 0;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -465,7 +546,7 @@ static inline size_t st_find_word_mismatch(const volatile uint32_t* ptr,
 }
 
 /* ------------------------------------------------------------------------ */
-/* Submission: one compute dispatch followed by an end-of-pipe label write   */
+/* Submission: a DCB of dispatches and raw packets, then an end-of-pipe label */
 /* ------------------------------------------------------------------------ */
 
 typedef struct {
@@ -490,38 +571,116 @@ static inline bool st_queue_init(StArena* arena, StQueue* queue) {
     return true;
 }
 
-/* Dispatches groups_x workgroups of shader with descriptor_table bound,
- * submits, and waits for the end-of-pipe label. Returns false on an OpenGNM
- * error, a submit error or a timeout. */
-static inline bool st_dispatch_and_wait(StQueue* queue,
-                                        const StComputeShader* shader,
-                                        GnmBuffer* descriptor_table,
-                                        uint32_t groups_x) {
+/* One submission under construction. Emitters record a failure (no command
+ * space left, or a packet a builder rejected) in ok, so a test can build a
+ * whole DCB and check once at submit. */
+typedef struct {
+    StQueue* queue;
+    GnmCommandBuffer cmd;
+    bool ok;
+} StDcb;
+
+static inline void st_dcb_begin(StDcb* dcb, StQueue* queue) {
+    dcb->queue = queue;
+    dcb->ok = true;
+    dcb->cmd = sceGnmCmdInit(queue->command_memory, ST_COMMAND_BUFFER_BYTES,
+                             NULL, NULL);
+    memset(&dcb->cmd.flags, 0, sizeof(dcb->cmd.flags));
+    sceGnmDrawCmdInitDefaultHardwareState(&dcb->cmd);
+}
+
+static inline void st_dcb_put(StDcb* dcb, const uint32_t* dwords,
+                              uint32_t count) {
+    if (count == 0 ||
+        (size_t)(dcb->cmd.endptr - dcb->cmd.cmdptr) < (size_t)count) {
+        dcb->ok = false;
+        return;
+    }
+    memcpy(dcb->cmd.cmdptr, dwords, count * sizeof(uint32_t));
+    dcb->cmd.cmdptr += count;
+}
+
+static inline void st_dcb_dispatch(StDcb* dcb, const StComputeShader* shader,
+                                   GnmBuffer* descriptor_table,
+                                   uint32_t groups_x) {
+    sceGnmDrawCmdSetCsShader(&dcb->cmd, &shader->shader->registers);
+    sceGnmDrawCmdSetPointerUserData(&dcb->cmd, GNM_STAGE_CS,
+                                    shader->descriptor_table_slot,
+                                    descriptor_table);
+    sceGnmDrawCmdDispatchDirect(&dcb->cmd, groups_x, 1, 1, 0);
+}
+
+/* [B] of the plan's guest synchronization contract (ST_PM4_BARRIER_*). */
+static inline void st_dcb_barrier(StDcb* dcb, unsigned flags) {
+    uint32_t dwords[ST_PM4_BARRIER_MAX_DWORDS];
+    st_dcb_put(dcb, dwords, st_pm4_barrier(dwords, flags));
+}
+
+/* [P]: PFP_SYNC_ME. */
+static inline void st_dcb_pfp_sync_me(StDcb* dcb) {
+    uint32_t dwords[ST_PM4_PFP_SYNC_ME_DWORDS];
+    st_dcb_put(dcb, dwords, st_pm4_pfp_sync_me(dwords));
+}
+
+static inline void st_dcb_write_data(StDcb* dcb, const volatile void* dst,
+                                     const uint32_t* data, uint32_t count) {
+    uint32_t dwords[ST_PM4_WRITE_DATA_BASE_DWORDS + ST_PM4_WRITE_DATA_MAX_DATA];
+    st_dcb_put(dcb, dwords,
+               st_pm4_write_data(dwords, (uint64_t)(uintptr_t)dst, data, count));
+}
+
+/* Skips the next exec_count dwords when *predicate is zero. */
+static inline void st_dcb_cond_exec(StDcb* dcb,
+                                    const volatile uint32_t* predicate,
+                                    uint32_t exec_count) {
+    uint32_t dwords[ST_PM4_COND_EXEC_DWORDS];
+    st_dcb_put(dcb, dwords,
+               st_pm4_cond_exec(dwords, (uint64_t)(uintptr_t)predicate,
+                                exec_count));
+}
+
+/* DMA_DATA fill/copy through OpenGNM (CP_SYNC set). */
+static inline void st_dcb_fill(StDcb* dcb, volatile void* dst, uint32_t bytes,
+                               uint32_t value) {
+    if (!sceGnmDrawCmdFillMemory(&dcb->cmd, (uint64_t)(uintptr_t)dst, bytes,
+                                 value)) {
+        dcb->ok = false;
+    }
+}
+
+static inline void st_dcb_copy(StDcb* dcb, volatile void* dst,
+                               const volatile void* src, uint32_t bytes) {
+    if (!sceGnmDrawCmdCopyMemory(&dcb->cmd, (uint64_t)(uintptr_t)dst,
+                                 (uint64_t)(uintptr_t)src, bytes)) {
+        dcb->ok = false;
+    }
+}
+
+/* Ends the DCB with an end-of-pipe label write, submits it, and waits for the
+ * label. Returns false on running out of command space, an OpenGNM error, a
+ * submit error or a timeout (the wait is bounded by ST_EOP_WAIT_MS). */
+static inline bool st_dcb_submit_and_wait(StDcb* dcb) {
+    StQueue* queue = dcb->queue;
     const uint64_t value = ++queue->next_value;
 
-    GnmCommandBuffer cmd = sceGnmCmdInit(queue->command_memory,
-                                         ST_COMMAND_BUFFER_BYTES, NULL, NULL);
-    memset(&cmd.flags, 0, sizeof(cmd.flags));
-    sceGnmDrawCmdInitDefaultHardwareState(&cmd);
-
-    sceGnmDrawCmdSetCsShader(&cmd, &shader->shader->registers);
-    sceGnmDrawCmdSetPointerUserData(
-        &cmd, GNM_STAGE_CS, shader->descriptor_table_slot, descriptor_table);
-    sceGnmDrawCmdDispatchDirect(&cmd, groups_x, 1, 1, 0);
     /* OpenGNM's EOP sets no TC cache-action bits; visibility of the shader's
      * buffer writes rests on the CACHE_COHERENT V# memory type from
      * st_raw_buffer. Validated on shadPS4 only, not on PS4 hardware. */
-    sceGnmDrawCmdEventWriteEop(&cmd, GNM_CACHE_FLUSH_AND_INV_TS_EVENT,
+    sceGnmDrawCmdEventWriteEop(&dcb->cmd, GNM_CACHE_FLUSH_AND_INV_TS_EVENT,
                                (uint64_t)(uintptr_t)queue->label,
                                GNM_DATA_SEL_SEND_DATA64, value);
 
+    if (!dcb->ok) {
+        printf("command buffer full or packet rejected\n");
+        return false;
+    }
     if (st_gnm_errors != 0) {
         return false;
     }
 
-    void* dcb_addrs[1] = {cmd.beginptr};
+    void* dcb_addrs[1] = {dcb->cmd.beginptr};
     uint32_t dcb_sizes[1] = {
-        (uint32_t)((uintptr_t)cmd.cmdptr - (uintptr_t)cmd.beginptr),
+        (uint32_t)((uintptr_t)dcb->cmd.cmdptr - (uintptr_t)dcb->cmd.beginptr),
     };
 
     st_store_fence();
@@ -544,9 +703,103 @@ static inline bool st_dispatch_and_wait(StQueue* queue,
         return true;
     }
 
-    printf("compute EOP timeout waiting for 0x%016llx\n",
-           (unsigned long long)value);
+    printf("EOP timeout waiting for 0x%016llx\n", (unsigned long long)value);
     return false;
+}
+
+/* Dispatches groups_x workgroups of shader with descriptor_table bound,
+ * submits, and waits for the end-of-pipe label. Returns false on an OpenGNM
+ * error, a submit error or a timeout. */
+static inline bool st_dispatch_and_wait(StQueue* queue,
+                                        const StComputeShader* shader,
+                                        GnmBuffer* descriptor_table,
+                                        uint32_t groups_x) {
+    StDcb dcb;
+    st_dcb_begin(&dcb, queue);
+    st_dcb_dispatch(&dcb, shader, descriptor_table, groups_x);
+    return st_dcb_submit_and_wait(&dcb);
+}
+
+/* ------------------------------------------------------------------------ */
+/* Placement: direct memory at chosen physical offsets and virtual addresses */
+/* ------------------------------------------------------------------------ */
+
+/* Declared by the SDK, not by the OpenOrbis headers; the OpenOrbis libkernel
+ * stub exports it. Needed to map one piece of direct memory twice. */
+int32_t sceKernelEnableDmemAliasing(void);
+
+enum {
+    /* shadPS4 tracks guest backing in 16 KiB pages (GetContiguousBacking),
+     * and lavapipe's BufferCache blocks are 16 KiB too. */
+    ST_DMEM_PAGE_BYTES = 16 * 1024,
+    /* SCE_KERNEL_MAP_FIXED */
+    ST_MAP_FIXED = 0x10,
+    ST_MEMORY_PROT = ORBIS_KERNEL_PROT_CPU_READ | ORBIS_KERNEL_PROT_CPU_RW |
+                     ORBIS_KERNEL_PROT_GPU_READ | ORBIS_KERNEL_PROT_GPU_WRITE,
+};
+
+/* Allocates Garlic direct memory inside [search_start, search_end), so the
+ * caller controls the physical offset. */
+static inline bool st_dmem_alloc_in(off_t search_start, off_t search_end,
+                                    size_t size, size_t alignment,
+                                    off_t* out) {
+    const int res =
+        sceKernelAllocateDirectMemory(search_start, search_end, size,
+                                      alignment, ORBIS_KERNEL_WC_GARLIC, out);
+    if (res != 0) {
+        printf("sceKernelAllocateDirectMemory [0x%llx, 0x%llx) size 0x%zx "
+               "failed: 0x%x\n",
+               (unsigned long long)search_start,
+               (unsigned long long)search_end, size, res);
+        return false;
+    }
+    return true;
+}
+
+/* Maps size bytes of direct memory at phys, at *addr when fixed. */
+static inline bool st_dmem_map(void** addr, size_t size, off_t phys,
+                               bool fixed) {
+    void* want = fixed ? *addr : NULL;
+    void* got = want;
+    const int res = sceKernelMapDirectMemory(
+        &got, size, ST_MEMORY_PROT, fixed ? ST_MAP_FIXED : 0, phys,
+        ST_DMEM_PAGE_BYTES);
+    if (res != 0) {
+        printf("sceKernelMapDirectMemory phys 0x%llx size 0x%zx failed: "
+               "0x%x\n",
+               (unsigned long long)phys, size, res);
+        return false;
+    }
+    if (fixed && got != want) {
+        printf("fixed mapping landed at %p instead of %p\n", got, want);
+        return false;
+    }
+    *addr = got;
+    return true;
+}
+
+/* Maps count pages of ST_DMEM_PAGE_BYTES back to back at one virtual range;
+ * page i comes from phys[i], so the range is physically contiguous only when
+ * the offsets are. */
+static inline bool st_map_pages(const off_t* phys, unsigned count,
+                                uint8_t** out) {
+    const size_t size = (size_t)count * ST_DMEM_PAGE_BYTES;
+    void* base = NULL;
+    const int res =
+        sceKernelReserveVirtualRange(&base, size, 0, ST_DMEM_PAGE_BYTES);
+    if (res != 0) {
+        printf("sceKernelReserveVirtualRange size 0x%zx failed: 0x%x\n", size,
+               res);
+        return false;
+    }
+    for (unsigned i = 0; i < count; ++i) {
+        void* page = (uint8_t*)base + (size_t)i * ST_DMEM_PAGE_BYTES;
+        if (!st_dmem_map(&page, ST_DMEM_PAGE_BYTES, phys[i], true)) {
+            return false;
+        }
+    }
+    *out = (uint8_t*)base;
+    return true;
 }
 
 #endif /* SHADTEST_GUEST_H */

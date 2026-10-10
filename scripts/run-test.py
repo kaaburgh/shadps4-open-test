@@ -16,7 +16,10 @@ CRITICAL = re.compile(r"<Critical>")
 MARKER = re.compile(r"SHADTEST\s+name=(?P<name>\S+)\s+status=(?P<status>PASS|FAIL)\b(?P<detail>.*)")
 
 
-def write_isolated_config(root: Path) -> Path:
+READBACKS_MODES = {"disabled": 0, "relaxed": 1, "precise": 2}
+
+
+def write_isolated_config(root: Path, readbacks: str) -> Path:
     """Create the minimal host config required by the pixel-readback oracle."""
     user_dir = root / "shadPS4"
     user_dir.mkdir(parents=True, exist_ok=True)
@@ -32,9 +35,10 @@ def write_isolated_config(root: Path) -> Path:
         json.dumps(
             {
                 # Stage-0 oracle reads a GPU-written linear RT from guest CPU
-                # memory, so make that readback requirement explicit.
+                # memory, so make that readback requirement explicit. Other
+                # readbacks modes are for tests that compare configurations.
                 "GPU": {
-                    "readbacks_mode": 2,
+                    "readbacks_mode": READBACKS_MODES[readbacks],
                     "readback_linear_images_enabled": True,
                 },
             },
@@ -55,6 +59,17 @@ def main() -> int:
         "--use-host-config",
         action="store_true",
         help="do not isolate XDG_DATA_HOME or force the readback oracle settings",
+    )
+    parser.add_argument(
+        "--readbacks",
+        choices=sorted(READBACKS_MODES),
+        default="precise",
+        help="readbacks mode written to the isolated config (default: precise)",
+    )
+    parser.add_argument(
+        "--shared-backing",
+        action="store_true",
+        help="set SHADPS4_UMA_SHARED_BACKING=1 (UMA E3 research builds of shadPS4)",
     )
     parser.add_argument(
         "--allow-no-display",
@@ -86,13 +101,27 @@ def main() -> int:
         )
         return 2
 
+    if args.use_host_config and args.readbacks != "precise":
+        print("--readbacks needs the isolated config; drop --use-host-config", file=sys.stderr)
+        return 2
+
     env = os.environ.copy()
+    # The flag is the only switch: an exported variable would otherwise turn
+    # every "mirror" run of run-matrix.sh into a shared one.
+    if args.shared_backing:
+        env["SHADPS4_UMA_SHARED_BACKING"] = "1"
+    else:
+        env.pop("SHADPS4_UMA_SHARED_BACKING", None)
     if not args.use_host_config:
         xdg_root = run_dir / "xdg-data"
-        config = write_isolated_config(xdg_root)
+        config = write_isolated_config(xdg_root, args.readbacks)
         env["XDG_DATA_HOME"] = str(xdg_root)
         print(f"using isolated shadPS4 config: {config}")
-        print("oracle settings: readbacksMode=Precise, readbackLinearImages=true")
+        print(
+            f"oracle settings: readbacksMode={args.readbacks.capitalize()}, "
+            "readbackLinearImages=true"
+        )
+    print(f"shared backing: {'on' if env.get('SHADPS4_UMA_SHARED_BACKING') == '1' else 'off'}")
 
     command = [args.shadps4, str(elf)]
     run_dir.mkdir(parents=True, exist_ok=True)
