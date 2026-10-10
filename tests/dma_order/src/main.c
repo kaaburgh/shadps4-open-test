@@ -236,6 +236,8 @@ int main(void) {
         st_case_note(&cases[CASE_D], "timeout", 0, DONE, *d_done);
     } else {
         st_case_expect(&cases[CASE_D], "done", 0, DONE, *d_done);
+        /* A fill that ran before the dispatch would be overwritten by it. */
+        st_case_expect(&cases[CASE_D], "flag", 1, FLAG_VALUE, *d_flag);
     }
 
     return st_finish_cases(cases, CASES, "");
