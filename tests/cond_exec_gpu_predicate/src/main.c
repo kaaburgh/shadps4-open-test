@@ -103,6 +103,9 @@ static void check_case(StCase* c, const Slot* s, uint32_t value) {
                      got);
     }
     st_case_expect(c, "sentinel", 1, SENTINEL, *s->sentinel);
+    /* Tells a parse-time read (marker wrong, pred right) from P's write
+     * never reaching guest memory (both wrong). */
+    st_case_expect(c, "pred_final", 2, value, s->pred[0]);
 }
 
 int main(void) {
