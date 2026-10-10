@@ -251,7 +251,8 @@ mirror.
 On UMA research builds of shadPS4, `SHADPS4_UMA_E0_CAPTURE=<new dir>` records every
 BufferCache decision, and `scripts/census-buffer-paths.py <dir> name=<start>-<end> ...` shows
 whether a guest range was served from the shared backing, the mirror or the stream buffer, or
-not obtained at all.
+not obtained at all. "Not obtained" is a hint, not proof: shared image sources record no event,
+and the last ~250 ms of a capture can be lost when the runner stops shadPS4.
 
 The shared-backing expectations of the E3 scenario tests assume 16 KiB BufferCache blocks, as
 on lavapipe. shadPS4 sizes the blocks from the Vulkan sparse-buffer alignment, often 64 KiB on

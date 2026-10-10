@@ -5,8 +5,10 @@ UMA research builds of shadPS4 write an event capture when
 SHADPS4_UMA_E0_CAPTURE names a new directory (schema shadps4-uma-e0/v1). Each
 BufferCache::ObtainBuffer call records a Buffer event with the path it chose:
 shared backing, the mirror, or the stream buffer. A range that never shows up
-was not obtained at all, for example because a DMA took shadPS4's CPU fast
-path.
+was most likely not obtained at all, for example because a DMA took shadPS4's
+CPU fast path. That is a hint, not proof: an image source served from the
+shared backing records no event, and the runner stops shadPS4 right after the
+result marker, so the last ~250 ms of events can be missing.
 
 Usage:
     census-buffer-paths.py <capture-dir> <name>=<start>-<end> [...]
@@ -22,7 +24,7 @@ import struct
 import sys
 
 KIND_BUFFER = 7
-PATHS = {0: "mirror", 1: "stream", 3: "shared"}
+PATHS = {0: "mirror", 1: "stream", 2: "image-staging", 3: "shared"}
 # position, time, tid, kind|flags<<32, context, session, tick, address, size,
 # a (3 = written), b (texel buffer), c (path), cmd_seq
 EVENT = struct.Struct("<13Q")

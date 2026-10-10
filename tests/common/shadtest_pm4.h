@@ -127,10 +127,12 @@ static inline uint32_t st_pm4_write_data(uint32_t* dst, uint64_t va,
 
 /* COND_EXEC: skip the next exec_count dwords when the predicate at va is
  * zero. This is the three-dword body shadPS4 parses (PM4CmdCondExec:
- * address lo, address hi + COMMAND, EXEC_COUNT). Mesa emits a four-dword
- * body with a cache-policy dword on GFX8+ (radv); which form Liverpool takes
- * is not settled by the sources at hand. shadPS4 reads only the predicate's
- * first byte, so predicates should be 0 or 1. Returns 0 for a bad argument. */
+ * address lo, address hi + COMMAND, EXEC_COUNT). Mesa (ac_emit_cp_cond_exec)
+ * emits a four-dword body with an extra 0 dword from GFX7 on, Liverpool's
+ * generation, and three dwords only on GFX6; shadPS4, which parses retail
+ * command buffers, expects three. If the cond_exec cases fail on hardware,
+ * suspect this layout first. shadPS4 reads only the predicate's first byte,
+ * so predicates should be 0 or 1. Returns 0 for a bad argument. */
 static inline uint32_t st_pm4_cond_exec(uint32_t* dst, uint64_t va,
                                         uint32_t exec_count) {
     if ((va & 3) != 0 || (va >> 48) != 0 || exec_count > 0x3fff) {
