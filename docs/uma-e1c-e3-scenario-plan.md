@@ -229,7 +229,7 @@ infrastructure.
 | B1 | `dma_alias_order` | E3 | DMA through a second VA of memory a dispatch writes via the first | shader / CP | P1 | placement | ✗ #5 | R | ✓ (shareable alias), ✗ #8 (non-contiguous alias) | same |
 | B2 | `dma_mixed_endpoints` | E3 | DMA copy shareable source → mirror-only destination | CP | P1 | placement | ✓ | ✓ | ✓ | ✓ |
 | B3 | `demotion_divergence` | E3 | A block bound shared, then demoted while the same dispatch still writes it through the chunk | shader | P2 | placement | ✓ | R | ✗ #7 | ✗ #7 |
-| B4 | `fallback_in_shared` | E3 | Chunk-crossing and non-contiguous ranges under shared backing | shader | P1 | placement | ✗ #14 (non-contiguous) | R | ✗ #14 (non-contiguous) | R (fallback ranges; control ✓) |
+| B4 | `fallback_in_shared` | E3 | Chunk-crossing and non-contiguous ranges under shared backing | shader | P1 | placement | ✗ #14 (non-contiguous) at `8d07f08`; ✓ since `83584ce` | R | ✗ #14 (non-contiguous) at `8d07f08`; ✓ since `83584ce` | R (fallback ranges; control ✓) |
 | B5 | `image_source_same_submit` | E3 | Compute writes, then a draw initializes its RT from those bytes in the same submit | RT | P1 | — | ✗ #4 | ✓ | ✓ | ✓ |
 | B6 | `cross_queue_wait` | E3/E1C | GFX `WAIT_REG_MEM` on a flag an ASC dispatch writes, producer parsed later | CP label + shader | P2 | ASC | ✓ | R hang | ✓ | ✓ |
 | B7 | `bda_remap` | E3 | BDA read across unmap/remap | shader | spike | `directMemoryAccess`, shader | ? | R | ? | ? |
@@ -567,8 +567,8 @@ with vertex buffers and BDA respectively.
 - Mirror Precise and shared Precise ✓ for `chunk_straddle` and the control. **Measured:** the
   non-contiguous range fails in both (kaaburgh/shadPS4#14). Readback writes guest memory through
   `MemoryManager::TryWriteBacking`, which never advances its source pointer, so every VMA after
-  the first in one readback receives the start of the buffer. A build with the one-line fix
-  passes.
+  the first in one readback receives the start of the buffer. Fixed in kaaburgh/shadPS4#16
+  (main) and #18 (E3, `83584ce`); B4 passes in both Precise modes from there on.
 - Mirror Relaxed/Disabled: R.
 - Shared Relaxed/Disabled:
   - the fallback ranges: R. They behave like mirror Disabled, so the GPU writes never reach the
@@ -685,6 +685,6 @@ reference shadPS4.
 | kaaburgh/shadPS4#8 (per-VA tracking) | B1 non-contiguous |
 | kaaburgh/shadPS4#11 (E1C parse-time access) | A1, A3, A6 |
 | kaaburgh/shadPS4#12 (fallbacks, partial unmap) | B4, B7 |
-| kaaburgh/shadPS4#14 (readback across VMAs) | B4 (Precise), B2 on pre-`8d07f08` builds |
+| kaaburgh/shadPS4#14 (readback across VMAs; fixed in #16 and #18) | B4 (Precise), B2 on pre-`8d07f08` builds |
 | kaaburgh/shadPS4#13 (uncovered guards) | B2, B5, B6, B7, A4 |
 | new: fallback under shared + Disabled | B4 |
