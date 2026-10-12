@@ -315,7 +315,8 @@ Compute/buffer tests can share two files in [tests/common/](tests/common/):
 
 - `guest.mk`: build rules. The test's Makefile sets `TEST` and `COMPUTE_SHADERS` and includes
   it. `src/main.c` becomes `out/<name>/<name>.elf`, and each `assets/<shader>.comp.glsl` becomes
-  `out/<name>/assets/<shader>.comp.sb`.
+  `out/<name>/assets/<shader>.comp.sb`. `LIBS` adds OpenOrbis stub libraries, such as
+  `-lScePngDec` for the `hle_*` tests of shadPS4's HLE libraries.
 - `shadtest_guest.h`: header-only guest helpers. They provide:
   - the result marker, and per-case bookkeeping that ends in one marker (`StCase`);
   - a CPU+GPU read-write Garlic direct-memory arena;
