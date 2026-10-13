@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Captures present_transfer's frame from the X display and checks its pixels.
 
-capture.py capture OUT.json [timeout_s]
+capture.py capture OUT.json [timeout_s [scale]]
     Run on the test's display (scripts/run-test-lavapipe.sh XVFB_HOOK). Polls
     the root window with XGetImage until the 32 patch centres are not all
     black and two captures a second apart agree, then writes the centre
     pixels to OUT.json. shadPS4 opens its window at the top left of the
-    1280x720 screen, at the frame's size, so frame and screen pixels match.
+    screen; at scale 1 its 1280x720 frame and the screen pixels match, and
+    at scale s the frame fills the top-left 1280s x 720s pixels.
 
 capture.py check OUT.json default|rec709
     Compares the captured centres with tools/patches.py's reference for that
@@ -28,7 +29,7 @@ TOLERANCE = 1
 SAMPLE = 8  # average an 8x8 block around each patch centre
 
 
-def grab(dpy, x11, root, width, height):
+def grab(dpy, x11, root, width, height, scale=1.0):
     image = x11.XGetImage(dpy, root, 0, 0, width, height, ctypes.c_ulong(~0), 2)  # ZPixmap
     if not image:
         return None
@@ -42,7 +43,7 @@ def grab(dpy, x11, root, width, height):
         sys.exit(f"unexpected {bits_per_pixel} bits per pixel")
     centres = []
     for index in range(len(patches.PATCHES)):
-        cx, cy = patches.patch_centre(index)
+        cx, cy = (round(v * scale) for v in patches.patch_centre(index))
         acc = [0, 0, 0]
         for y in range(cy - SAMPLE // 2, cy + SAMPLE // 2):
             row = y * bytes_per_line
@@ -56,7 +57,7 @@ def grab(dpy, x11, root, width, height):
     return centres
 
 
-def capture(out: Path, timeout: float) -> int:
+def capture(out: Path, timeout: float, scale: float = 1.0) -> int:
     x11 = ctypes.CDLL("libX11.so.6")
     x11.XOpenDisplay.restype = ctypes.c_void_p
     x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
@@ -76,7 +77,8 @@ def capture(out: Path, timeout: float) -> int:
     previous = None
     while time.monotonic() < deadline:
         time.sleep(1.0)
-        centres = grab(dpy, x11, root, patches.WIDTH, patches.HEIGHT)
+        centres = grab(dpy, x11, root, round(patches.WIDTH * scale),
+                       round(patches.HEIGHT * scale), scale)
         if centres is None or max(max(c) for c in centres) == 0:
             continue
         if centres == previous:
@@ -107,7 +109,8 @@ def check(out: Path, mode: str) -> int:
 
 if __name__ == "__main__":
     if len(sys.argv) >= 3 and sys.argv[1] == "capture":
-        sys.exit(capture(Path(sys.argv[2]), float(sys.argv[3]) if len(sys.argv) > 3 else 60.0))
+        sys.exit(capture(Path(sys.argv[2]), float(sys.argv[3]) if len(sys.argv) > 3 else 60.0,
+                         float(sys.argv[4]) if len(sys.argv) > 4 else 1.0))
     if len(sys.argv) == 4 and sys.argv[1] == "check":
         sys.exit(check(Path(sys.argv[2]), sys.argv[3]))
     sys.exit(__doc__)
