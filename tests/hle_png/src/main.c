@@ -20,7 +20,8 @@
  *   parse_truncated   scePngDecParseHeader on PNGs cut inside the signature
  *                     and inside IHDR fails.
  *   truncated         scePngDecDecode on PNGs cut inside the signature, IHDR
- *                     and IDAT fails and writes nothing past imageMemSize.
+ *                     or IDAT, or missing only IEND, fails and writes nothing
+ *                     past imageMemSize.
  *   decode_repeat     two more decodes on one handle give the same pixels.
  *   corrupt           a PNG whose IHDR CRC is wrong: the call fails.
  *   recover           on one handle, the corrupt PNG fails and the valid one
@@ -476,8 +477,10 @@ int main(void) {
         expect_canary(c, "written_pitch_short", g_out, sizeof(g_out));
     }
 
-    /* Cuts: inside the signature, inside IHDR, inside IDAT. */
-    const uint32_t cuts[] = {7, 20, sizeof(png_rgba) - 30};
+    /* Cuts: inside the signature, inside IHDR, inside IDAT, and the whole
+     * 12-byte IEND chunk after complete image data. */
+    const uint32_t cuts[] = {7, 20, sizeof(png_rgba) - 30,
+                             sizeof(png_rgba) - 12};
     {
         StCase* c = &cases[C_PARSE_TRUNCATED];
         start(c);
