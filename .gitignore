@@ -4,3 +4,4 @@ out/
 *.log
 tests/*/assets/*.spv
 tests/*/assets/*.sb
+__pycache__/
