@@ -237,7 +237,9 @@ SHADPS4=/path/to/shadPS4/build/shadps4 \
 This starts a private Xvfb, selects the lavapipe Vulkan ICD and runs the same host runner.
 Xvfb picks a free display (set `XVFB_DISPLAY=:N` to pin one) and reports it once it accepts
 connections; the script waits for Xvfb to exit afterwards, so runs can be started back to back.
-If Xvfb does not start, the script exits 2 (infrastructure failure).
+If Xvfb does not start, the script exits 2 (infrastructure failure). `XVFB_HOOK`, if set, is a
+command run in the background on the same display while the test runs: `hle_ime` uses it to press
+a key that closes the IME panel.
 
 ### All six configurations
 
