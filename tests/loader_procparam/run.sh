@@ -4,7 +4,7 @@
 #
 #   original   as built (0x50 with OpenOrbis): the reference version, not 0
 #   0x18       just holds the SDK version          -> the reference version
-#   0x17       too short to hold it                 -> any version (printed)
+#   0x17       too short to hold it                 -> 0 (not read)
 #   0x80       larger than the fields shadPS4 knows -> the reference version
 #   0x1000     4 KiB                                 -> the reference version
 #   0x100000   1 MiB, past the end of the file      -> the reference version
@@ -26,7 +26,7 @@ trap 'cp "$OUT/original.elf" "$ELF"' EXIT
 
 status=0
 reference=
-run() { # <name> <size or -> <expected: ref|0>
+run() { # <name> <size or -> <expected: ref or a version>
     local name=$1 size=$2 want=$3
     cp "$OUT/original.elf" "$ELF"
     [[ $size != - ]] && python3 "$DIR/tools/set_procparam_size.py" "$OUT/original.elf" "$ELF" "$size" >/dev/null
@@ -39,7 +39,6 @@ run() { # <name> <size or -> <expected: ref|0>
         want=$version
     fi
     [[ $want == ref ]] && want=$reference
-    [[ $want == any ]] && want=$version
     local verdict=PASS
     [[ $result == *status=PASS* && -n $version && $version == "$want" ]] || verdict=FAIL
     [[ $name == original && ( -z $version || $version == 0x00000000 ) ]] && verdict=FAIL
@@ -49,7 +48,7 @@ run() { # <name> <size or -> <expected: ref|0>
 
 run original - ref
 run min 0x18 ref
-run short 0x17 any
+run short 0x17 0x00000000
 run larger 0x80 ref
 run page 0x1000 ref
 run huge 0x100000 ref
