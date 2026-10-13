@@ -217,6 +217,7 @@ The host runner:
   and `--set Section.key=value` into its config, and copies `out/<test>/user/` into it (a test's
   Makefile writes these, e.g. generated trophy data);
 - fails the run if a shadPS4 log line matches a regular expression in `out/<test>/forbid-log.txt`;
+- passes each `--emu-arg=ARG` to shadPS4 before the ELF path, e.g. `--emu-arg=-p --emu-arg=x.xml`;
 - scans combined shadPS4 output for `SHADTEST`;
 - saves `out/gpu_solid_rt/run.log`;
 - returns 0 for guest PASS, 1 for guest FAIL, and 2 for infrastructure/no-marker failure;
