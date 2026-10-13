@@ -9,10 +9,17 @@ capture.py capture OUT.json [timeout_s [scale]]
     screen; at scale 1 its 1280x720 frame and the screen pixels match, and
     at scale s the frame fills the top-left 1280s x 720s pixels.
 
+    Also stored: the pixels of a short horizontal strip across the edge
+    between patches 28 (10, 20, 30) and 29 (255, 128, 0).
+
 capture.py check OUT.json default|rec709
     Compares the captured centres with tools/patches.py's reference for that
     output mode, within 1 LSB. Prints PRESENT_TRANSFER mode=... PASS|FAIL and
     exits 0 or 1.
+
+capture.py differ A.json B.json MIN
+    Passes (exit 0) if the edge strips of two captures differ by more than MIN
+    in some pixel and channel, e.g. FSR against the plain scaler.
 """
 from __future__ import annotations
 
@@ -27,6 +34,8 @@ import patches  # noqa: E402
 
 TOLERANCE = 1
 SAMPLE = 8  # average an 8x8 block around each patch centre
+EDGE_LEFT, EDGE_RIGHT = 28, 29  # adjacent patches in the last row, far apart in colour
+STRIP = 12  # frame pixels on each side of the edge
 
 
 def grab(dpy, x11, root, width, height, scale=1.0):
@@ -54,7 +63,13 @@ def grab(dpy, x11, root, width, height, scale=1.0):
                 acc[2] += data_ptr[o]
         n = SAMPLE * SAMPLE
         centres.append([round(c / n, 2) for c in acc])
-    return centres
+    edge_x = (patches.patch_centre(EDGE_LEFT)[0] + patches.patch_centre(EDGE_RIGHT)[0]) / 2
+    y = round(patches.patch_centre(EDGE_LEFT)[1] * scale)
+    strip = []
+    for x in range(round((edge_x - STRIP) * scale), round((edge_x + STRIP) * scale)):
+        o = y * bytes_per_line + x * 4
+        strip.append([data_ptr[o + 2], data_ptr[o + 1], data_ptr[o]])
+    return centres, strip
 
 
 def capture(out: Path, timeout: float, scale: float = 1.0) -> int:
@@ -77,15 +92,31 @@ def capture(out: Path, timeout: float, scale: float = 1.0) -> int:
     previous = None
     while time.monotonic() < deadline:
         time.sleep(1.0)
-        centres = grab(dpy, x11, root, round(patches.WIDTH * scale),
+        grabbed = grab(dpy, x11, root, round(patches.WIDTH * scale),
                        round(patches.HEIGHT * scale), scale)
-        if centres is None or max(max(c) for c in centres) == 0:
+        if grabbed is None or max(max(c) for c in grabbed[0]) == 0:
             continue
-        if centres == previous:
-            out.write_text(json.dumps({"centres": centres}) + "\n", encoding="utf-8")
+        if grabbed == previous:
+            centres, strip = grabbed
+            out.write_text(json.dumps({"centres": centres, "strip": strip}) + "\n",
+                           encoding="utf-8")
             return 0
-        previous = centres
+        previous = grabbed
     return 1
+
+
+def differ(a: Path, b: Path, minimum: float) -> int:
+    strips = []
+    for path in (a, b):
+        if not path.is_file():
+            print(f"PRESENT_TRANSFER differ FAIL reason=no_capture file={path.name}")
+            return 1
+        strips.append(json.loads(path.read_text(encoding="utf-8"))["strip"])
+    biggest = max(abs(p - q) for pa, pb in zip(*strips) for p, q in zip(pa, pb))
+    status = "PASS" if biggest > minimum else "FAIL"
+    print(f"PRESENT_TRANSFER differ {a.name} {b.name} {status} max_difference={biggest} "
+          f"minimum={minimum:g}")
+    return 0 if status == "PASS" else 1
 
 
 def check(out: Path, mode: str) -> int:
@@ -113,4 +144,6 @@ if __name__ == "__main__":
                          float(sys.argv[4]) if len(sys.argv) > 4 else 1.0))
     if len(sys.argv) == 4 and sys.argv[1] == "check":
         sys.exit(check(Path(sys.argv[2]), sys.argv[3]))
+    if len(sys.argv) == 5 and sys.argv[1] == "differ":
+        sys.exit(differ(Path(sys.argv[2]), Path(sys.argv[3]), float(sys.argv[4])))
     sys.exit(__doc__)
