@@ -15,7 +15,10 @@
  *   XVFB_HOOK="python3 tests/hle_ime/tools/press_keys.py" \
  *       bash scripts/run-test-lavapipe.sh hle_ime --timeout 120
  *
- * Without the key presses every case times out and the test fails.
+ * Without the key presses every case times out and the test fails. The tool
+ * needs libX11 and libXtst on the host (libx11-6, libxtst6); if they are
+ * missing it prints an INFRA line and exits, and the timeouts that follow are
+ * not an IME result.
  *
  * Cases:
  *   open_text   the string is the initial inputTextBuffer content.

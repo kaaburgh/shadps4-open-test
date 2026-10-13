@@ -6,6 +6,10 @@ default keyboard mapping puts on "b". The pointer is moved to the screen
 centre first: without a window manager, X sends key events to the window
 under the pointer.
 
+Needs libX11 and libXtst (Debian/Ubuntu: libx11-6 libxtst6). Without them it
+prints an INFRA line and exits 2; the guest then times out as
+"FAIL reason=not_closed", which is not an IME result.
+
 usage: press_keys.py [key] [interval_s] [duration_s]
 """
 import ctypes
@@ -16,8 +20,13 @@ key = (sys.argv[1] if len(sys.argv) > 1 else "b").encode()
 interval = float(sys.argv[2]) if len(sys.argv) > 2 else 2.0
 duration = float(sys.argv[3]) if len(sys.argv) > 3 else 120.0
 
-x11 = ctypes.CDLL("libX11.so.6")
-xtst = ctypes.CDLL("libXtst.so.6")
+try:
+    x11 = ctypes.CDLL("libX11.so.6")
+    xtst = ctypes.CDLL("libXtst.so.6")
+except OSError as error:
+    print(f"press_keys.py: INFRA cannot load X libraries ({error}); "
+          "install libx11-6 and libxtst6", file=sys.stderr, flush=True)
+    sys.exit(2)
 x11.XOpenDisplay.restype = ctypes.c_void_p
 x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
 x11.XStringToKeysym.restype = ctypes.c_ulong
