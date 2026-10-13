@@ -9,7 +9,8 @@
  *   gettime   for each clock and both APIs: two reads 20 ms apart succeed,
  *             tv_nsec is in [0, 1e9), the clock does not go back, wall and
  *             network clocks read a date between 2020 and 2100, and
- *             non-CPU clocks advance by 10 ms .. 5 s across the sleep.
+ *             non-CPU clocks advance by 10 ms .. 5 s across the sleep
+ *             (CLOCK_SECOND by 0 .. 5 s, as it may count whole seconds).
  *   errors    a NULL timespec and unknown clock ids (3, 6, 20, 0x7fffffff)
  *             fail: sceKernelClockGettime with a negative code, clock_gettime
  *             with -1. The codes are printed, not checked.
@@ -130,6 +131,8 @@ int main(void) {
                        (uint32_t)rc2, (long long)t2.sec, (long long)t2.nsec,
                        (long long)delta);
                 const uint32_t index = (uint32_t)(api << 8 | CLOCKS[k].id);
+                /* A whole-second clock need not move within 20 ms. */
+                const int64_t min_advance = CLOCKS[k].id == 13 ? 0 : 10000000;
                 if (rc1[api][k] != 0 || rc2 != 0) {
                     st_case_note(c, "gettime_rc", index, 0,
                                  (uint32_t)(rc1[api][k] ? rc1[api][k] : rc2));
@@ -140,7 +143,7 @@ int main(void) {
                 if (delta < 0) {
                     st_case_note(c, "went_back", index, 0, (uint32_t)-delta);
                 } else if (CLOCKS[k].kind != CPU &&
-                           (delta < 10000000 || delta > 5 * NS_PER_S)) {
+                           (delta < min_advance || delta > 5 * NS_PER_S)) {
                     st_case_note(c, "advance", index, 20000000,
                                  (uint32_t)(delta / 1000));
                 }
