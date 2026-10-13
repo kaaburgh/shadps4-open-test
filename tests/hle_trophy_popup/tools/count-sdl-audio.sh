@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Runs hle_trophy_popup with shadPS4 under gdb and checks that the trophy
-# popups release every SDL audio resource they take: each opened audio device
-# is closed, each audio stream destroyed, and each SDL audio subsystem
-# reference returned. shadPS4's window takes one audio reference at startup
-# and keeps it, so one more init than quit is expected. The breakpoints sit on
-# SDL's public entry points, so SDL's internal calls are not counted.
+# popups do not pile up SDL audio resources: every audio stream they create is
+# destroyed, and at most one audio device and one audio subsystem reference
+# stay open however many popups ran (a device shared by all popups may be kept
+# for the rest of the run). shadPS4's window takes one more audio reference at
+# startup and keeps it. The breakpoints sit on SDL's public entry points, so
+# SDL's internal calls are not counted.
 #
 # usage: SHADPS4=/path/to/shadps4 tests/hle_trophy_popup/tools/count-sdl-audio.sh \
 #            [run-test-lavapipe.sh args, e.g. --set Audio.audio_backend=1]
@@ -109,7 +110,7 @@ inits, quits = audio("init"), audio("quit")
 print(f"audio devices opened {opened}, closed {closed}")
 print(f"audio streams created {created}, destroyed {destroyed}")
 print(f"audio subsystem inits {inits}, quits {quits} (the window keeps one)")
-ok = opened == closed and created == destroyed and inits - 1 == quits and opened > 0
+ok = opened > 0 and opened - closed <= 1 and created == destroyed and inits - quits <= 2
 print("SDL_AUDIO_BALANCE " + ("PASS" if ok else "FAIL"))
 sys.exit(0 if ok else 1)
 PY

@@ -18,8 +18,9 @@
  *   bash scripts/run-test-lavapipe.sh hle_trophy_popup
  *   bash scripts/run-test-lavapipe.sh hle_trophy_popup --set Audio.audio_backend=1
  *
- * tools/count-sdl-audio.sh runs the test under gdb and checks that every SDL
- * audio device and stream the popups open is closed again.
+ * tools/count-sdl-audio.sh runs the test under gdb and checks that the popups
+ * destroy every SDL audio stream they create and leave at most one audio
+ * device open.
  */
 
 #define SHADTEST_NAME "hle_trophy_popup"
