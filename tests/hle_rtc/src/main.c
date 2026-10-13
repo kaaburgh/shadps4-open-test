@@ -13,7 +13,8 @@
  *                   space-padded day.
  *   round_trip      sceRtcFormatRFC3339 / sceRtcFormatRFC2822 of T0 at +120
  *                   and -330 minutes parse back to T0.
- *   malformed       wrong digits, bad offsets, unknown month names and
+ *   malformed       wrong digits or separators, a missing zone, bytes after
+ *                   it, bad or out-of-range offsets, unknown month names and
  *                   impossible dates fail and leave the output tick alone.
  *   short           strings shorter than their format (down to "") fail and
  *                   leave the output tick alone.
@@ -199,6 +200,12 @@ int main(void) {
             "2026-10-12T21:07:46+xx:00", /* offset not digits */
             "2026-10-12T21:07:46+02:",   /* offset cut */
             "2026-10-12T21:07:46.Z",     /* empty fraction */
+            "2026/10/12T21:07:46Z",      /* wrong date separators */
+            "2026-10-12T21:07:46",       /* no zone */
+            "2026-10-12T21:07:46+02x30", /* no colon in the offset */
+            "2026-10-12T21:07:46+02:99", /* offset minutes 99 */
+            "2026-10-12T21:07:46+24:00", /* offset hours 24 */
+            "2026-10-12T21:07:46Z?",     /* bytes after the zone */
         };
         for (unsigned k = 0; k < sizeof(rfc3339) / sizeof(rfc3339[0]); ++k) {
             expect_reject(c, sceRtcParseRFC3339, k, rfc3339[k]);
@@ -207,6 +214,7 @@ int main(void) {
             "Mon, 12 Xyz 2026 21:07:46 +0000", /* unknown month */
             "Mon, 1x Oct 2026 21:07:46 +0000", /* day not digits */
             "Mon, 12 Oct 2026 21:07:46 +02x0", /* offset not digits */
+            "Mon, 12 Oct 2026 21:07:46 +0299", /* offset minutes 99 */
             "Mon Xyz 12 21:07:46 2026",        /* unknown month */
             "Mon Oct 12 21:07:46 20x6",        /* year not digits */
             "2026-13-12T21:07:46Z",            /* RFC 3339, month 13 */
