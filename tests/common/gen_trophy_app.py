@@ -13,6 +13,8 @@ Service labels:
   0  NPWR90000_00  a valid trophy set (TROP.XML and TROPCONF.XML)
   1  NPWR90001_00  malformed XML in both files
   2  NPWR90002_00  no extracted files; its placeholder .trp fails to extract
+  3  NPWR90003_00  a valid trophy set with a title longer than the 128-byte
+                   title field, whose trophy 1 has no ttype (grade) attribute
 
 Writes <out>/sce_sys/npbind.dat, <out>/sce_sys/trophy/trophy0N.trp and
 <out>/user/trophy/<id>/Xml/*.XML; scripts/run-test.py copies <out>/user into
@@ -24,7 +26,7 @@ from pathlib import Path
 import struct
 import sys
 
-NP_COMM_IDS = ["NPWR90000_00", "NPWR90001_00", "NPWR90002_00"]
+NP_COMM_IDS = ["NPWR90000_00", "NPWR90001_00", "NPWR90002_00", "NPWR90003_00"]
 
 # id, grade, hidden, group (None: base game), name, detail
 TROPHIES = [
@@ -35,15 +37,17 @@ TROPHIES = [
     (4, "B", "no", 1, "Bronze two", "A bronze trophy in group 1"),
 ]
 GROUPS = [(1, "Group one", "The only trophy group")]
+TITLE = "shadps4-open-test trophies"
+LONG_TITLE = "Long title " + "x" * 189
 
 
-def trophy_xml(np_comm_id: str) -> str:
+def trophy_xml(np_comm_id: str, title: str = TITLE, no_ttype: tuple[int, ...] = ()) -> str:
     lines = [
         '<?xml version="1.0" encoding="UTF-8"?>',
         '<trophyconf version="1.1" platform="ps4">',
         f"  <npcommid>{np_comm_id}</npcommid>",
         "  <trophyset-version>01.00</trophyset-version>",
-        "  <title-name>shadps4-open-test trophies</title-name>",
+        f"  <title-name>{title}</title-name>",
         "  <title-detail>Generated trophy set</title-detail>",
     ]
     for gid, name, detail in GROUPS:
@@ -51,8 +55,9 @@ def trophy_xml(np_comm_id: str) -> str:
     for tid, grade, hidden, gid, name, detail in TROPHIES:
         pid = "-1" if grade == "P" else "000"
         group = f' gid="{gid:03d}"' if gid is not None else ""
+        ttype = "" if tid in no_ttype else f' ttype="{grade}"'
         lines.append(
-            f'  <trophy id="{tid:03d}" hidden="{hidden}" ttype="{grade}" pid="{pid}"{group}>'
+            f'  <trophy id="{tid:03d}" hidden="{hidden}"{ttype} pid="{pid}"{group}>'
             f"<name>{name}</name><detail>{detail}</detail></trophy>"
         )
     lines.append("</trophyconf>")
@@ -101,6 +106,12 @@ def main() -> int:
     broken.mkdir(parents=True, exist_ok=True)
     (broken / "TROP.XML").write_text(MALFORMED_XML, encoding="utf-8")
     (broken / "TROPCONF.XML").write_text(MALFORMED_XML, encoding="utf-8")
+
+    edge = out / "user" / "trophy" / NP_COMM_IDS[3] / "Xml"
+    edge.mkdir(parents=True, exist_ok=True)
+    edge_xml = trophy_xml(NP_COMM_IDS[3], title=LONG_TITLE, no_ttype=(1,))
+    (edge / "TROP.XML").write_text(edge_xml, encoding="utf-8")
+    (edge / "TROPCONF.XML").write_text(edge_xml, encoding="utf-8")
     return 0
 
 
