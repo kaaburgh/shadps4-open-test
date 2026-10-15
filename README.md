@@ -47,6 +47,9 @@ Current shadPS4 reads `config.json`; a lone legacy `config.toml` triggers a moda
 dialog. The runner also pre-creates `shadPS4/home/1000/` because shadPS4 otherwise shows a modal
 "Save Migration" dialog on every fresh user directory, which hangs an unattended run.
 
+`--elf PATH` boots an executable from another folder instead of `out/<test>/<test>.elf`. That
+folder becomes the game folder, for tests that depend on its name or on what sits next to it.
+
 So `gpu_solid_rt` deliberately validates a combined path:
 
 ```text

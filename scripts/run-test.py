@@ -104,6 +104,10 @@ def main() -> int:
         help="extra shadPS4 command-line argument, passed before the ELF, e.g. --emu-arg=-p",
     )
     parser.add_argument(
+        "--elf",
+        help="boot this executable instead of out/<test>/<test>.elf; its folder is the game folder",
+    )
+    parser.add_argument(
         "--allow-no-display",
         action="store_true",
         help="try anyway; current upstream shadPS4 normally needs SDL video",
@@ -111,7 +115,7 @@ def main() -> int:
     args = parser.parse_args()
 
     root = Path(__file__).resolve().parent.parent
-    elf = root / "out" / args.test / f"{args.test}.elf"
+    elf = Path(args.elf).resolve() if args.elf else root / "out" / args.test / f"{args.test}.elf"
     run_dir = root / "out" / args.test
     log_path = run_dir / "run.log"
 
