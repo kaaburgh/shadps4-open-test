@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Run a test on shadPS4 with Mesa lavapipe (CPU Vulkan) under a private Xvfb.
 # Usage: SHADPS4=/path/to/shadps4 scripts/run-test-lavapipe.sh <test> [run-test.py args...]
+# XVFB_HOOK, if set, is a command run in the background with the same DISPLAY for
+# the length of the test, e.g. to send it key presses.
 set -euo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -15,7 +17,12 @@ command -v Xvfb >/dev/null || { echo "Xvfb not found (install xvfb)" >&2; exit 2
 # ready.
 DISPLAY_FILE="$(mktemp)"
 XVFB_PID=
+HOOK_PID=
 cleanup() {
+    if [[ -n "$HOOK_PID" ]]; then
+        kill "$HOOK_PID" 2>/dev/null || true
+        wait "$HOOK_PID" 2>/dev/null || true
+    fi
     if [[ -n "$XVFB_PID" ]]; then
         kill "$XVFB_PID" 2>/dev/null || true
         wait "$XVFB_PID" 2>/dev/null || true
@@ -43,5 +50,10 @@ export DISPLAY=":$DISPLAY_NUM"
 export VK_ICD_FILENAMES="$LVP_ICD"   # older loaders
 export VK_DRIVER_FILES="$LVP_ICD"    # loader >= 1.3.207
 export SDL_AUDIO_DRIVER="${SDL_AUDIO_DRIVER:-dummy}"
+
+if [[ -n "${XVFB_HOOK:-}" ]]; then
+    bash -c "$XVFB_HOOK" &
+    HOOK_PID=$!
+fi
 
 python3 "$ROOT/scripts/run-test.py" "$@"
