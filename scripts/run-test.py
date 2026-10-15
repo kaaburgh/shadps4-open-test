@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import selectors
+import shutil
 import subprocess
 import sys
 import time
@@ -19,8 +20,29 @@ MARKER = re.compile(r"SHADTEST\s+name=(?P<name>\S+)\s+status=(?P<status>PASS|FAI
 READBACKS_MODES = {"disabled": 0, "relaxed": 1, "precise": 2}
 
 
-def write_isolated_config(root: Path, readbacks: str) -> Path:
-    """Create the minimal host config required by the pixel-readback oracle."""
+def merge_settings(config: dict, overlay: dict) -> None:
+    """Merge {"Section": {"key": value}} settings into config, section by section."""
+    for section, values in overlay.items():
+        config.setdefault(section, {}).update(values)
+
+
+def parse_set(text: str) -> tuple[str, str, object]:
+    """Parse --set Section.key=value; value is JSON, or a plain string."""
+    name, sep, raw = text.partition("=")
+    section, dot, key = name.partition(".")
+    if not sep or not dot or not section or not key:
+        raise argparse.ArgumentTypeError(f"expected Section.key=value, got {text!r}")
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        value = raw
+    return section, key, value
+
+
+def write_isolated_config(root: Path, readbacks: str, overlay: dict | None = None) -> Path:
+    """Create the minimal host config required by the pixel-readback oracle.
+
+    overlay adds test-specific settings, from out/<test>/config.json and --set."""
     user_dir = root / "shadPS4"
     user_dir.mkdir(parents=True, exist_ok=True)
     # On a fresh user dir shadPS4 creates home/1000 and unconditionally shows a
@@ -31,22 +53,17 @@ def write_isolated_config(root: Path, readbacks: str) -> Path:
     # Current shadPS4 reads config.json. A lone legacy config.toml makes it pop a
     # modal "Config Migration" SDL dialog, which hangs an unattended run.
     config = user_dir / "config.json"
-    config.write_text(
-        json.dumps(
-            {
-                # Stage-0 oracle reads a GPU-written linear RT from guest CPU
-                # memory, so make that readback requirement explicit. Other
-                # readbacks modes are for tests that compare configurations.
-                "GPU": {
-                    "readbacks_mode": READBACKS_MODES[readbacks],
-                    "readback_linear_images_enabled": True,
-                },
-            },
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+    settings = {
+        # Stage-0 oracle reads a GPU-written linear RT from guest CPU
+        # memory, so make that readback requirement explicit. Other
+        # readbacks modes are for tests that compare configurations.
+        "GPU": {
+            "readbacks_mode": READBACKS_MODES[readbacks],
+            "readback_linear_images_enabled": True,
+        },
+    }
+    merge_settings(settings, overlay or {})
+    config.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
     return config
 
 
@@ -70,6 +87,21 @@ def main() -> int:
         "--shared-backing",
         action="store_true",
         help="set SHADPS4_UMA_SHARED_BACKING=1 (UMA E3 research builds of shadPS4)",
+    )
+    parser.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        type=parse_set,
+        metavar="SECTION.KEY=VALUE",
+        help="extra shadPS4 setting for the isolated config, e.g. Audio.audio_backend=1",
+    )
+    parser.add_argument(
+        "--emu-arg",
+        action="append",
+        default=[],
+        metavar="ARG",
+        help="extra shadPS4 command-line argument, passed before the ELF, e.g. --emu-arg=-p",
     )
     parser.add_argument(
         "--elf",
@@ -105,9 +137,29 @@ def main() -> int:
         )
         return 2
 
-    if args.use_host_config and args.readbacks != "precise":
-        print("--readbacks needs the isolated config; drop --use-host-config", file=sys.stderr)
+    if args.use_host_config and (args.readbacks != "precise" or args.set):
+        print("--readbacks and --set need the isolated config; drop --use-host-config",
+              file=sys.stderr)
         return 2
+
+    # Optional per-test inputs, written by the test's Makefile:
+    #   out/<test>/config.json    settings merged into the isolated config;
+    #   out/<test>/user/          files copied into the isolated shadPS4 user
+    #                             directory, e.g. trophy data;
+    #   out/<test>/forbid-log.txt one regular expression per line; a matching
+    #                             shadPS4 log line fails the run.
+    overlay: dict = {}
+    overlay_file = run_dir / "config.json"
+    if overlay_file.is_file():
+        merge_settings(overlay, json.loads(overlay_file.read_text(encoding="utf-8")))
+    for section, key, value in args.set:
+        merge_settings(overlay, {section: {key: value}})
+    forbidden: list[re.Pattern[str]] = []
+    forbid_file = run_dir / "forbid-log.txt"
+    if forbid_file.is_file():
+        for pattern in forbid_file.read_text(encoding="utf-8").splitlines():
+            if pattern.strip() and not pattern.startswith("#"):
+                forbidden.append(re.compile(pattern))
 
     env = os.environ.copy()
     # The flag is the only switch: an exported variable would otherwise turn
@@ -118,7 +170,12 @@ def main() -> int:
         env.pop("SHADPS4_UMA_SHARED_BACKING", None)
     if not args.use_host_config:
         xdg_root = run_dir / "xdg-data"
-        config = write_isolated_config(xdg_root, args.readbacks)
+        # Start from scratch: shadPS4 and the test's user files write here.
+        shutil.rmtree(xdg_root, ignore_errors=True)
+        config = write_isolated_config(xdg_root, args.readbacks, overlay)
+        user_files = run_dir / "user"
+        if user_files.is_dir():
+            shutil.copytree(user_files, xdg_root / "shadPS4", dirs_exist_ok=True)
         env["XDG_DATA_HOME"] = str(xdg_root)
         print(f"using isolated shadPS4 config: {config}")
         print(
@@ -127,7 +184,7 @@ def main() -> int:
         )
     print(f"shared backing: {'on' if env.get('SHADPS4_UMA_SHARED_BACKING') == '1' else 'off'}")
 
-    command = [args.shadps4, str(elf)]
+    command = [args.shadps4, *args.emu_arg, str(elf)]
     run_dir.mkdir(parents=True, exist_ok=True)
 
     # Unbuffered bytes: a buffered readline() can pull the marker into Python's
@@ -149,15 +206,18 @@ def main() -> int:
     marker_status: str | None = None
     marker_line: str | None = None
     critical_line: str | None = None
+    forbidden_line: str | None = None
     lines: list[str] = []
 
     def consume(line: str) -> bool:
         """Record one output line; return True once the result marker is seen."""
-        nonlocal marker_status, marker_line, critical_line
+        nonlocal marker_status, marker_line, critical_line, forbidden_line
         lines.append(line)
         sys.stdout.write(line)
         sys.stdout.flush()
         plain = ANSI_ESCAPE.sub("", line)
+        if forbidden_line is None and any(p.search(plain) for p in forbidden):
+            forbidden_line = plain.strip()
         match = MARKER.search(plain)
         if match and match.group("name") == args.test:
             marker_status = match.group("status")
@@ -211,6 +271,10 @@ def main() -> int:
             print(f"guest marker ignored: {marker_line}", file=sys.stderr)
             print(f"HOST_RESULT INFRA_FAIL shadPS4 critical before marker: {critical_line}")
             return 2
+        if forbidden_line is not None:
+            print(f"guest marker ignored: {marker_line}", file=sys.stderr)
+            print(f"HOST_RESULT FAIL forbidden shadPS4 log line: {forbidden_line}")
+            return 1
         print(f"HOST_RESULT {marker_line}")
         return 0 if marker_status == "PASS" else 1
 
