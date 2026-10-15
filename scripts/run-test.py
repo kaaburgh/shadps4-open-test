@@ -97,6 +97,13 @@ def main() -> int:
         help="extra shadPS4 setting for the isolated config, e.g. Audio.audio_backend=1",
     )
     parser.add_argument(
+        "--emu-arg",
+        action="append",
+        default=[],
+        metavar="ARG",
+        help="extra shadPS4 command-line argument, passed before the ELF, e.g. --emu-arg=-p",
+    )
+    parser.add_argument(
         "--allow-no-display",
         action="store_true",
         help="try anyway; current upstream shadPS4 normally needs SDL video",
@@ -173,7 +180,7 @@ def main() -> int:
         )
     print(f"shared backing: {'on' if env.get('SHADPS4_UMA_SHARED_BACKING') == '1' else 'off'}")
 
-    command = [args.shadps4, str(elf)]
+    command = [args.shadps4, *args.emu_arg, str(elf)]
     run_dir.mkdir(parents=True, exist_ok=True)
 
     # Unbuffered bytes: a buffered readline() can pull the marker into Python's
