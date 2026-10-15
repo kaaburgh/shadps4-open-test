@@ -238,7 +238,10 @@ SHADPS4=/path/to/shadPS4/build/shadps4 \
 This starts a private Xvfb, selects the lavapipe Vulkan ICD and runs the same host runner.
 Xvfb picks a free display (set `XVFB_DISPLAY=:N` to pin one) and reports it once it accepts
 connections; the script waits for Xvfb to exit afterwards, so runs can be started back to back.
-If Xvfb does not start, the script exits 2 (infrastructure failure).
+If Xvfb does not start, the script exits 2 (infrastructure failure). `XVFB_HOOK`, if set, is a
+command run in the background on the same display while the test runs: `hle_ime` uses it to press
+a key that closes the IME panel. `XVFB_SCREEN` sets the Xvfb screen (default
+`1280x720x24`).
 
 ### All six configurations
 
@@ -320,7 +323,8 @@ Compute/buffer tests can share two files in [tests/common/](tests/common/):
 
 - `guest.mk`: build rules. The test's Makefile sets `TEST` and `COMPUTE_SHADERS` and includes
   it. `src/main.c` becomes `out/<name>/<name>.elf`, and each `assets/<shader>.comp.glsl` becomes
-  `out/<name>/assets/<shader>.comp.sb`.
+  `out/<name>/assets/<shader>.comp.sb`. `LIBS` adds OpenOrbis stub libraries, such as
+  `-lScePngDec` for the `hle_*` tests of shadPS4's HLE libraries.
 - `shadtest_guest.h`: header-only guest helpers. They provide:
   - the result marker, and per-case bookkeeping that ends in one marker (`StCase`);
   - a CPU+GPU read-write Garlic direct-memory arena;

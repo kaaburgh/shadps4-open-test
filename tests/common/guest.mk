@@ -4,6 +4,8 @@
 #   TEST            the test name (its directory under tests/)
 #   COMPUTE_SHADERS basenames of assets/<name>.comp.glsl to compile with
 #                   opengnm-psbc; each lands at out/<test>/assets/<name>.comp.sb
+#   LIBS            optional extra OpenOrbis stub libraries to link, such as
+#                   -lScePngDec for a test of an HLE library
 # and then includes this file. src/main.c is the only guest source.
 
 COMMON := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
@@ -69,7 +71,7 @@ $(ELF): $(RAW_ELF) | $(OUT)
 
 $(RAW_ELF): $(OBJ) $(OPENGNM)/libopengnm.a | $(BUILD)
 	$(LD) -o "$@" "$(OBJ)" $(LDFLAGS) \
-		"$(OPENGNM)/libopengnm.a" -lc -lkernel -lSceGnmDriver -lSceVideoOut \
+		"$(OPENGNM)/libopengnm.a" $(LIBS) -lc -lkernel -lSceGnmDriver -lSceVideoOut \
 		"$(TOOLCHAIN)/lib/crt1.o" "$(TOOLCHAIN)/lib/crti.o" "$(TOOLCHAIN)/lib/crtn.o"
 
 $(BUILD)/%.comp.spv: assets/%.comp.glsl | $(BUILD)
