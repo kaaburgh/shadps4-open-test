@@ -1,0 +1,4 @@
+# shadPS4 log lines that fail the run: the trophy popup could not play its sound.
+Unable to init SDL Audio for trophy sound
+Unable to open audio device for trophy sound
+Unable to load trophy wave file
