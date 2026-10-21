@@ -1,7 +1,7 @@
 # opengnm-psbc resource ABI
 
-This repository applies a small patch set to the pinned
-`PS4-OpenGNM/opengnm-psbc` revision from `deps.lock`. The patch gives the
+The kaaburgh/opengnm-psbc fork pinned in `deps.lock` adds a small change to
+`PS4-OpenGNM/opengnm-psbc` (`OPENGNM_PSBC_BASE_SHA`). The change gives the
 standalone compiler an explicit resource ABI for ordinary UBO and SSBO
 buffers. It exists so synthetic PS4 tests can exercise buffer memory without
 silently compiling resource accesses against a null V#.
@@ -45,7 +45,7 @@ table + 0x20   binding 2 V#
 ...
 ```
 
-The patched standalone compiler creates a synthetic
+The fork's standalone compiler creates a synthetic
 `radv_descriptor_set_layout` with `offset = 16 * binding`, `size = 16`,
 and `array_size = 1` for each used UBO/SSBO binding. That layout is supplied
 to both shader-info analysis and descriptor lowering through
@@ -85,7 +85,7 @@ uses offset 4.
 
 ## Input-usage slot flag byte
 
-For `PTR_INDIRECTRESOURCETABLE`, the patch emits
+For `PTR_INDIRECTRESOURCETABLE`, the compiler emits
 `registercount = 0`, `resourcetype = 0`, and `chunkmask = 0`.
 
 Publicly available GNM-compatible structures describe `registercount` as
@@ -128,12 +128,12 @@ shaders retain their previous code-generation path.
 
 `tooling/verify-psbc-resource-abi.py` checks positive SSBO and UBO +
 sparse-binding cases and negative unsupported cases without an emulator. It can also compare the
-resource-free `gpu_solid_rt` shader binaries against an unpatched baseline
-compiler when `--baseline-psbc` is supplied.
+resource-free `gpu_solid_rt` shader binaries against a baseline compiler built
+from `OPENGNM_PSBC_BASE_SHA` when `--baseline-psbc` is supplied.
 
 ## Current implementation decisions
 
-The standalone patch carries a dedicated `radv_shader_stage_key` bit for full
+The fork carries a dedicated `radv_shader_stage_key` bit for full
 descriptor-set addresses. The normal vendored RADV path keeps its existing
 one-SGPR descriptor-pointer ABI; psbc enables the bit only for stages that
 actually have the synthesized set-0 buffer layout.
@@ -160,7 +160,7 @@ would make the generated user-data layout inconsistent.
 
 ## Known limitation: compute workgroups smaller than 64
 
-Independently of this patch, the pinned psbc aborts with
+Independently of this change, the pinned psbc aborts with
 `radv_nir_shader_info_pass: Assertion 'gfx_level >= GFX10 || wave_size == 64'`
 for GFX7 compute shaders whose workgroup is smaller than one wave64 (for
 example `local_size_x = 1` or `32`). Use workgroups of at least 64
@@ -168,7 +168,7 @@ invocations; the verifier's shaders do.
 
 ## Known limitation: VS vertex-buffer table
 
-This patch does not change RADV/OpenGNM's vertex-input path. The
+This change does not touch RADV/OpenGNM's vertex-input path. The
 `vertex_buffers` pointer used by VS input lowering remains a one-SGPR
 low-address argument whose high 32 bits come from `address32_hi` (zero in
 the current standalone PS4 compiler setup).
@@ -176,4 +176,4 @@ the current standalone PS4 compiler setup).
 Consequently this ABI makes the set-0 UBO/SSBO resource table fully
 64-bit-addressable, but it does not make the VS vertex-buffer descriptor
 table above 4 GiB safe. That is a separate problem and is intentionally out
-of scope for this patch.
+of scope for this change.

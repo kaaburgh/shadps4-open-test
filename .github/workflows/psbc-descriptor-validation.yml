@@ -31,22 +31,25 @@ jobs:
           git clone -q "$VULKAN_HEADERS_REPO" .deps/Vulkan-Headers
           git -C .deps/Vulkan-Headers checkout -q --detach "$VULKAN_HEADERS_SHA"
 
-      - name: Build unpatched baseline psbc
+      - name: Build the upstream baseline psbc
         shell: bash
         run: |
           set -euo pipefail
+          source deps.lock
+          git -C .deps/opengnm-psbc checkout -q --detach "$OPENGNM_PSBC_BASE_SHA"
           cp tooling/opengnm-psbc-linux.mak .deps/opengnm-psbc/config.mak
           bash tooling/psbc-codegen.sh .deps/opengnm-psbc
           make -C .deps/opengnm-psbc generated
           make -C .deps/opengnm-psbc -j"$(nproc)"
           cp .deps/opengnm-psbc/opengnm-psbc /tmp/opengnm-psbc-baseline
 
-      - name: Apply patch and rebuild
+      - name: Build the pinned psbc with any local patches
         shell: bash
         run: |
           set -euo pipefail
+          shopt -s nullglob
           source deps.lock
-          git -C .deps/opengnm-psbc reset -q --hard "$OPENGNM_PSBC_SHA"
+          git -C .deps/opengnm-psbc checkout -q -f --detach "$OPENGNM_PSBC_SHA"
           git -C .deps/opengnm-psbc clean -q -fdx
           for patch in patches/opengnm-psbc/*.patch; do
             git -C .deps/opengnm-psbc apply --check "$GITHUB_WORKSPACE/$patch"

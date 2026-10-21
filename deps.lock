@@ -5,12 +5,19 @@ OPENORBIS_ARCHIVE=toolchain-llvm-18.tar.gz
 OPENORBIS_SHA256=3c7cd5bb593ca74fa1c13fd59f3938dc0fc07985167f7275063019e63abe4526
 
 # Fork of PS4-OpenGNM/opengnm 4b295ca: fixes the DISPATCH_DIRECT packet count in
-# sceGnmDrawCmdDispatchDirect (kaaburgh/opengnm#2). Return to upstream once it is fixed there.
+# sceGnmDrawCmdDispatchDirect (kaaburgh/opengnm#2) and starts sceGnmCreateRenderTarget from a
+# zeroed target (kaaburgh/opengnm#3). Return to upstream once both are fixed there.
 OPENGNM_REPO=https://github.com/kaaburgh/opengnm.git
-OPENGNM_SHA=c3ec707eb72ba917c8a4d48df749e91f1017838e
+OPENGNM_SHA=fbb16e2e948536ec77806d7f46e140b806cff5af
 
-OPENGNM_PSBC_REPO=https://github.com/PS4-OpenGNM/opengnm-psbc.git
-OPENGNM_PSBC_SHA=a92a1228ea3a64e4be9f0e61c2a65a5aa7ffed92
+# Fork of PS4-OpenGNM/opengnm-psbc a92a122 that adds the buffer-resource ABI in
+# docs/psbc-resource-abi.md (kaaburgh/opengnm-psbc#1, with #2 keeping the existing PsbcResult
+# values stable). Return to upstream once it is merged there.
+OPENGNM_PSBC_REPO=https://github.com/kaaburgh/opengnm-psbc.git
+OPENGNM_PSBC_SHA=ffcaff30d82264e979111c03a5529d56783127cb
+# The upstream revision the fork is based on. CI builds it as the baseline for the
+# resource-free byte-identity check of tooling/verify-psbc-resource-abi.py.
+OPENGNM_PSBC_BASE_SHA=a92a1228ea3a64e4be9f0e61c2a65a5aa7ffed92
 
 SPIRV_HEADERS_REPO=https://github.com/KhronosGroup/SPIRV-Headers.git
 SPIRV_HEADERS_SHA=86f980c731e62ae4eaf383d320449d71687936bf

@@ -69,8 +69,8 @@ implemented. The design and current upstream findings are recorded in
 
 `gpu_solid_rt` has been built from a clean checkout and run on shadPS4 `dade3af` with Mesa
 lavapipe (CPU Vulkan) under Xvfb. It passes with no critical shadPS4 log lines once shadPS4
-carries [patches/shadps4/](patches/shadps4/) (see below); on stock `dade3af` the runner reports
-an infrastructure failure, because shadPS4 aborts on the test's end-of-pipe packet. Two
+carries the two fixes described below; on stock `dade3af` the runner reports an
+infrastructure failure, because shadPS4 aborts on the test's end-of-pipe packet. Two
 negative controls fail as expected: readbacks disabled gives `got=00000000`, and a red fragment
 shader gives `got=ff0000ff`. The fixes that run needed (build, ELF format, config, shader footer,
 shadPS4 first-run dialog, OpenGNM EOP packet) and the logs are recorded in
@@ -85,8 +85,8 @@ Pinned build inputs are recorded in [deps.lock](deps.lock).
 Stage-0 build dependencies:
 
 - OpenOrbis PS4 Toolchain v0.5.4: guest compiler/sysroot/link/runtime inputs;
-- OpenGNM: GNM implementation/API, MIT;
-- opengnm-psbc: SPIR-V -> PS4 GFX7 shader compiler, MIT project with vendored Mesa code; the pinned source is locally patched by [patches/opengnm-psbc/](patches/opengnm-psbc/) to provide the buffer-resource ABI documented in [docs/psbc-resource-abi.md](docs/psbc-resource-abi.md);
+- OpenGNM: GNM implementation/API, MIT; pinned to the kaaburgh/opengnm fork, which carries fixes not yet upstream;
+- opengnm-psbc: SPIR-V -> PS4 GFX7 shader compiler, MIT project with vendored Mesa code; pinned to the kaaburgh/opengnm-psbc fork, which adds the buffer-resource ABI documented in [docs/psbc-resource-abi.md](docs/psbc-resource-abi.md);
 - SPIRV-Headers and Vulkan-Headers: host-side psbc build inputs;
 - `glslc`: GLSL -> SPIR-V.
 
@@ -116,14 +116,14 @@ bash scripts/build-test.sh gpu_solid_rt
 ```
 
 `bootstrap-deps.sh` downloads the official OpenOrbis v0.5.4 Linux toolchain archive, verifies
-its published SHA-256, checks out the source dependencies at exact revisions, applies the
-repository's ordered `patches/opengnm-psbc/*.patch` set, builds `opengnm-psbc`, and builds
-the OpenGNM Orbis static library under `.deps/`. The psbc patch set is SHA-256 stamped: an
-unchanged repeat bootstrap is a no-op for psbc, while a changed patch set resets the checkout
-to `OPENGNM_PSBC_SHA`, reapplies the patches and rebuilds it. A patch that fails to apply
-stops the bootstrap before the stamp is written. Every bootstrap ends the psbc step by running
-the resource-ABI verifier below, so an unpatched or stale compiler fails there instead of in a
-guest test.
+its published SHA-256, checks out the source dependencies at exact revisions, applies any
+local `patches/opengnm-psbc/*.patch` (there are none at the moment; the pinned fork already
+contains the resource ABI), builds `opengnm-psbc`, and builds the OpenGNM Orbis static library
+under `.deps/`. The psbc patch set is SHA-256 stamped: an unchanged repeat bootstrap is a no-op
+for psbc, while a changed patch set resets the checkout to `OPENGNM_PSBC_SHA`, reapplies the
+patches and rebuilds it. A patch that fails to apply stops the bootstrap before the stamp is
+written. Every bootstrap ends the psbc step by running the resource-ABI verifier below, so a
+stale compiler, or one without the resource ABI, fails there instead of in a guest test.
 
 The local psbc resource ABI supports set-0 UBO/SSBO buffer descriptors with a full 64-bit
 descriptor-table pointer. Unsupported descriptor/user-data forms fail compilation instead of
@@ -145,12 +145,13 @@ sparse binding 2, it verifies V# loads at DWORD offsets 0/4 and 0/8 from the
 `PTR_INDIRECTRESOURCETABLE` SGPR pair. It checks that each loaded V# is consumed: the SSBOs by
 MUBUF, the UBO by `s_buffer_load`. Every resource must come from those loads, with no constant
 `s_mov` overwriting a loaded V#. It also verifies compile-time
-rejection of set 1, descriptor arrays and `gl_NumWorkGroups`. Run against the unpatched pinned
-psbc, it fails because no V# is loaded from the table.
+rejection of set 1, descriptor arrays and `gl_NumWorkGroups`. Run against upstream
+opengnm-psbc (`OPENGNM_PSBC_BASE_SHA` in `deps.lock`), it fails because no V# is loaded from
+the table.
 
-If an executable built from the unpatched pinned psbc revision is available, pass it as
+If an executable built from `OPENGNM_PSBC_BASE_SHA` is available, pass it as
 `--baseline-psbc /path/to/opengnm-psbc` to additionally require byte-identical output for the
-resource-free `gpu_solid_rt` vertex and fragment shaders.
+resource-free `gpu_solid_rt` vertex and fragment shaders. CI does this on every pull request.
 
 The expected guest output is:
 
@@ -170,9 +171,8 @@ libstdc++, which lacks C++23 pieces shadPS4 uses (`std::ranges::to`), and CMake 
 
 ```bash
 sudo apt install -y clang-19 clang-tools-19 libstdc++-14-dev ninja-build
-git clone --recursive https://github.com/shadps4-emu/shadPS4.git
+git clone --recursive https://github.com/kaaburgh/shadPS4.git
 cd shadPS4
-git apply /path/to/shadps4-open-test/patches/shadps4/*.patch
 cmake -S . -B build/ -G Ninja -DCMAKE_C_COMPILER=clang-19 -DCMAKE_CXX_COMPILER=clang++-19 \
     -DCMAKE_CXX_COMPILER_CLANG_SCAN_DEPS=/usr/bin/clang-scan-deps-19
 cmake --build build --parallel "$(nproc)"
@@ -180,22 +180,36 @@ cmake --build build --parallel "$(nproc)"
 
 See the upstream Linux build document for the full distro package list.
 
-Why the patches: for `0001`, OpenGNM's `sceGnmDrawCmdEventWriteEop` emits `EVENT_WRITE_EOP` with
+The kaaburgh/shadPS4 fork's `main` carries the two shadPS4 fixes these tests need on lavapipe.
+It also carries fixes for other bugs that several HLE tests target, so on upstream shadPS4
+those tests are expected to fail. To test upstream shadPS4 anyway, clone
+`shadps4-emu/shadPS4` and apply the single commit on each of the fork's
+`upstream-pr/08-eop-int-sel-3` and `upstream-pr/09-sparse-arena-limits` branches. The fork
+rebases those branches onto upstream from time to time, hence the forced fetch:
+
+```bash
+git fetch https://github.com/kaaburgh/shadPS4.git \
+    +upstream-pr/08-eop-int-sel-3:fix/eop-int-sel-3 \
+    +upstream-pr/09-sparse-arena-limits:fix/sparse-arena-limits
+git cherry-pick -n fix/eop-int-sel-3 fix/sparse-arena-limits
+```
+
+Why the fixes: OpenGNM's `sceGnmDrawCmdEventWriteEop` emits `EVENT_WRITE_EOP` with
 `INT_SEL=3` (`SEND_DATA_AFTER_WR_CONFIRM`): write the data after write confirmation and send
 no interrupt (Mesa RADV documents it as "Wait for write confirmation before writing data, but
-don't send an interrupt"). shadPS4 `dade3af`'s `EVENT_WRITE_EOP` handler reaches `UNREACHABLE`
+don't send an interrupt"). Upstream shadPS4's `EVENT_WRITE_EOP` handler reaches `UNREACHABLE`
 for that selector and the emulator aborts right after the label write, so a polling test
-could print PASS while shadPS4 crashes (the runner now rejects that). `0001` accepts
+could print PASS while shadPS4 crashes (the runner now rejects that). The first fix accepts
 selector 3 as a no-interrupt case. It deliberately does not copy shadPS4's `RELEASE_MEM`
 handling, which treats 3 like an interrupt request. The guest packet is left as OpenGNM emits
 it rather than adapted to the emulator.
 
-`0002` sizes the buffer cache's sparse arenas within the device's limits. shadPS4 `dade3af`
-backs guest buffers with fixed 4 GiB sparse buffers, but a Vulkan buffer may not exceed
+The second fix sizes the buffer cache's sparse arenas within the device's limits. Upstream
+shadPS4 backs guest buffers with fixed 4 GiB sparse buffers, but a Vulkan buffer may not exceed
 `maxBufferSize` and has to fit in `sparseAddressSpaceSize`. Lavapipe reports 4 GiB - 1 and
 2 GiB, so the first guest buffer bind fails with `ErrorOutOfDeviceMemory` and the emulator
 aborts. Buffer workloads such as `buffer_compute_roundtrip` hit this; `gpu_solid_rt` does
-not, because it uses no buffers. With the patch, lavapipe gets 1 GiB arenas (the log prints
+not, because it uses no buffers. With the fix, lavapipe gets 1 GiB arenas (the log prints
 `Using 0x40000000-byte sparse buffer arenas`), and devices that allow 4 GiB arenas keep them.
 
 ## Run
