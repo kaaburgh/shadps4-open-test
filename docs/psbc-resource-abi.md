@@ -1,7 +1,7 @@
 # opengnm-psbc resource ABI
 
-This repository applies a small patch set to the pinned
-`PS4-OpenGNM/opengnm-psbc` revision from `deps.lock`. The patch gives the
+The kaaburgh/opengnm-psbc fork pinned in `deps.lock` adds a small change to
+`PS4-OpenGNM/opengnm-psbc` (`OPENGNM_PSBC_BASE_SHA`). The change gives the
 standalone compiler an explicit resource ABI for ordinary UBO and SSBO
 buffers. It exists so synthetic PS4 tests can exercise buffer memory without
 silently compiling resource accesses against a null V#.
@@ -85,7 +85,7 @@ uses offset 4.
 
 ## Input-usage slot flag byte
 
-For `PTR_INDIRECTRESOURCETABLE`, the patch emits
+For `PTR_INDIRECTRESOURCETABLE`, the compiler emits
 `registercount = 0`, `resourcetype = 0`, and `chunkmask = 0`.
 
 Publicly available GNM-compatible structures describe `registercount` as
@@ -128,8 +128,8 @@ shaders retain their previous code-generation path.
 
 `tooling/verify-psbc-resource-abi.py` checks positive SSBO and UBO +
 sparse-binding cases and negative unsupported cases without an emulator. It can also compare the
-resource-free `gpu_solid_rt` shader binaries against an unpatched baseline
-compiler when `--baseline-psbc` is supplied.
+resource-free `gpu_solid_rt` shader binaries against a baseline compiler built
+from `OPENGNM_PSBC_BASE_SHA` when `--baseline-psbc` is supplied.
 
 ## Current implementation decisions
 
