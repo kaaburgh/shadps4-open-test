@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify the patched standalone opengnm-psbc buffer-resource ABI on GFX7."""
+"""Verify the standalone opengnm-psbc buffer-resource ABI on GFX7."""
 
 from __future__ import annotations
 
@@ -377,12 +377,13 @@ def main() -> int:
     parser.add_argument(
         "--psbc",
         default=str(ROOT / ".deps/opengnm-psbc/opengnm-psbc"),
-        help="patched opengnm-psbc executable",
+        help="opengnm-psbc executable under test",
     )
     parser.add_argument("--glslc", default="glslc")
     parser.add_argument(
         "--baseline-psbc",
-        help="optional unpatched psbc executable for byte-identical resource-free comparison",
+        help="optional baseline psbc executable, built from OPENGNM_PSBC_BASE_SHA, for "
+        "byte-identical resource-free comparison",
     )
     args = parser.parse_args()
 

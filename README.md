@@ -181,15 +181,17 @@ cmake --build build --parallel "$(nproc)"
 See the upstream Linux build document for the full distro package list.
 
 The kaaburgh/shadPS4 fork's `main` carries the two shadPS4 fixes these tests need on lavapipe.
-To test upstream shadPS4 instead, clone `shadps4-emu/shadPS4` and cherry-pick the single commit
-on each of the fork's `upstream-pr/08-eop-int-sel-3` and `upstream-pr/09-sparse-arena-limits`
-branches, which are kept on top of current upstream:
+It also carries fixes for other bugs that several HLE tests target, so on upstream shadPS4
+those tests are expected to fail. To test upstream shadPS4 anyway, clone
+`shadps4-emu/shadPS4` and apply the single commit on each of the fork's
+`upstream-pr/08-eop-int-sel-3` and `upstream-pr/09-sparse-arena-limits` branches. The fork
+rebases those branches onto upstream from time to time, hence the forced fetch:
 
 ```bash
 git fetch https://github.com/kaaburgh/shadPS4.git \
-    upstream-pr/08-eop-int-sel-3:fix/eop-int-sel-3 \
-    upstream-pr/09-sparse-arena-limits:fix/sparse-arena-limits
-git cherry-pick fix/eop-int-sel-3 fix/sparse-arena-limits
+    +upstream-pr/08-eop-int-sel-3:fix/eop-int-sel-3 \
+    +upstream-pr/09-sparse-arena-limits:fix/sparse-arena-limits
+git cherry-pick -n fix/eop-int-sel-3 fix/sparse-arena-limits
 ```
 
 Why the fixes: OpenGNM's `sceGnmDrawCmdEventWriteEop` emits `EVENT_WRITE_EOP` with

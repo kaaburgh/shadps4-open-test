@@ -73,7 +73,7 @@ apply_patchset() {
 
     # clone_at intentionally leaves a matching detached HEAD in place even
     # when tracked files are patched. Reset only when the patch stamp changes,
-    # then rebuild from the pinned upstream tree.
+    # then rebuild from the pinned tree.
     git -C "$dest" reset -q --hard "$base_sha"
     git -C "$dest" clean -q -fdx
 
@@ -145,7 +145,7 @@ if [[ "$PATCHSET_CHANGED" == 1 ]] || [[ ! -x "$DEPS/opengnm-psbc/opengnm-psbc" ]
 fi
 
 # Fail here rather than in a test if the built compiler does not provide the
-# buffer-resource ABI (for example, a stale or unpatched build).
+# buffer-resource ABI (for example, a stale build or a revision without it).
 python3 "$ROOT/tooling/verify-psbc-resource-abi.py" --psbc "$DEPS/opengnm-psbc/opengnm-psbc" >/dev/null
 
 if [[ ! -f "$DEPS/opengnm/libopengnm.a" ]]; then

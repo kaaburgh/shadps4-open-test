@@ -78,7 +78,7 @@ $(BUILD)/%.comp.spv: assets/%.comp.glsl | $(BUILD)
 	$(GLSLC) -fshader-stage=compute --target-env=vulkan1.1 "$<" -o "$@"
 
 # Depends on the compiler too: bootstrap rebuilds psbc in place when its
-# patch set changes.
+# pin or patch set changes.
 $(OUT)/assets/%.comp.sb: $(BUILD)/%.comp.spv $(PSBC) | $(OUT)/assets
 	"$(PSBC)" -s compute -f "$<" -o "$@" -4
 
