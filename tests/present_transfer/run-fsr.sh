@@ -25,7 +25,10 @@
 #     across the edge between two patches differ from the FSR run's by more
 #     than EDGE_MIN. If FSR were ignored, the two strips would be the same.
 #
-# usage: SHADPS4=/path/to/shadps4 tests/present_transfer/run-fsr.sh
+# Each of the two guest runs gets FSR_TIMEOUT seconds (default 180). With
+# validation on, slower machines need more than a minute for the 300 flips.
+#
+# usage: SHADPS4=/path/to/shadps4 [FSR_TIMEOUT=seconds] tests/present_transfer/run-fsr.sh
 set -uo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -34,6 +37,7 @@ OUT="$ROOT/out/present_transfer"
 LOG="$OUT/run-fsr.log"
 SIZES="1365x768 1601x900 640x360 1001x777 1920x1080"
 EDGE_MIN=8
+FSR_TIMEOUT="${FSR_TIMEOUT:-180}"
 
 rm -f "$OUT/capture-fsr.json" "$OUT/capture-fsr-1x.json" "$OUT/capture-plain.json" \
     "$OUT/resize.log"
@@ -41,7 +45,7 @@ XVFB_SCREEN=1920x1080x24 \
 XVFB_HOOK="python3 '$DIR/tools/resize_window.py' $SIZES >'$OUT/resize.log' 2>&1; \
 python3 '$DIR/tools/capture.py' capture '$OUT/capture-fsr.json' 30 1.5; \
 python3 '$DIR/tools/capture.py' capture '$OUT/capture-fsr-1x.json' 10 1" \
-    bash "$ROOT/scripts/run-test-lavapipe.sh" present_transfer --timeout 60 \
+    bash "$ROOT/scripts/run-test-lavapipe.sh" present_transfer --timeout "$FSR_TIMEOUT" \
     --set GPU.window_width=1920 --set GPU.window_height=1080 \
     --set GPU.fsr_enabled=true --set Vulkan.vkvalidation_enabled=true >"$LOG" 2>&1
 rc=$?
@@ -49,7 +53,7 @@ rc=$?
 # Control: the same window without FSR.
 XVFB_SCREEN=1920x1080x24 \
 XVFB_HOOK="python3 '$DIR/tools/capture.py' capture '$OUT/capture-plain.json' 30 1.5" \
-    bash "$ROOT/scripts/run-test-lavapipe.sh" present_transfer --timeout 60 \
+    bash "$ROOT/scripts/run-test-lavapipe.sh" present_transfer --timeout "$FSR_TIMEOUT" \
     --set GPU.window_width=1920 --set GPU.window_height=1080 \
     --set GPU.fsr_enabled=false >"$OUT/run-plain.log" 2>&1
 plain_rc=$?
