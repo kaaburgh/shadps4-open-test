@@ -4,6 +4,7 @@
 # XVFB_HOOK, if set, is a command run in the background with the same DISPLAY for
 # the length of the test, e.g. to send it key presses.
 # XVFB_SCREEN sets the Xvfb screen (default 1280x720x24).
+# SDL_LOGGING defaults to video=debug, so the log shows when SDL cannot connect to Xvfb.
 set -euo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -59,6 +60,7 @@ export DISPLAY=":$DISPLAY_NUM"
 export VK_ICD_FILENAMES="$LVP_ICD"   # older loaders
 export VK_DRIVER_FILES="$LVP_ICD"    # loader >= 1.3.207
 export SDL_AUDIO_DRIVER="${SDL_AUDIO_DRIVER:-dummy}"
+export SDL_LOGGING="${SDL_LOGGING:-video=debug}"
 
 if [[ -n "${XVFB_HOOK:-}" ]]; then
     bash -c "$XVFB_HOOK" &
