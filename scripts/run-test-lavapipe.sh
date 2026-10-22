@@ -15,11 +15,15 @@ command -v Xvfb >/dev/null || { echo "Xvfb not found (install xvfb)" >&2; exit 2
 # picks a free display unless XVFB_DISPLAY pins one. Polling for the socket file
 # instead raced back-to-back runs: the previous Xvfb, killed but not yet exited,
 # still owned the display, so the new one failed to start while its socket looked
-# ready.
+# ready. -noreset keeps the server up between clients: by default Xvfb resets when
+# its last client disconnects, and a client connecting during the reset fails.
+# Xvfb's own output is printed only when the run fails.
 DISPLAY_FILE="$(mktemp)"
+XVFB_LOG="$(mktemp)"
 XVFB_PID=
 HOOK_PID=
 cleanup() {
+    local rc=$?
     if [[ -n "$HOOK_PID" ]]; then
         kill "$HOOK_PID" 2>/dev/null || true
         wait "$HOOK_PID" 2>/dev/null || true
@@ -28,13 +32,17 @@ cleanup() {
         kill "$XVFB_PID" 2>/dev/null || true
         wait "$XVFB_PID" 2>/dev/null || true
     fi
-    rm -f "$DISPLAY_FILE"
+    if [[ $rc -ne 0 && -s "$XVFB_LOG" ]]; then
+        echo "--- Xvfb output ---" >&2
+        cat "$XVFB_LOG" >&2
+    fi
+    rm -f "$DISPLAY_FILE" "$XVFB_LOG"
 }
 trap cleanup EXIT
 
 # shellcheck disable=SC2086 # XVFB_DISPLAY is either empty or one ":N" word.
 Xvfb ${XVFB_DISPLAY:-} -displayfd 3 -screen 0 "${XVFB_SCREEN:-1280x720x24}" -nolisten tcp \
-    3>"$DISPLAY_FILE" >/dev/null 2>&1 &
+    -noreset 3>"$DISPLAY_FILE" >"$XVFB_LOG" 2>&1 &
 XVFB_PID=$!
 for _ in $(seq 100); do
     [[ -s "$DISPLAY_FILE" ]] && break
