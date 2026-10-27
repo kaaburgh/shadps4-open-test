@@ -8,12 +8,17 @@
  * index), which on GCN belongs to another wave. It writes that word v, mixed
  * with its own index, to dst and adds to two sets of buffer counters:
  *
- *   counters[v & 63]          += 1   histogram of v
- *   counters[64 + workgroup]  += v   sum of the workgroup's words
+ *   counters[v & 63]                          += 1   histogram of v
+ *   counters[64 + workgroup * 4 + (lid & 3)]  += v   partial workgroup sums
  *
  * Every expected word is computed on the CPU. The counters start from
  * non-zero values, so an atomic that stores instead of adding fails too, and
  * the sums wrap modulo 2^32 like the GPU's.
+ *
+ * Each atomic address differs between lanes. One sum per workgroup would
+ * give the whole wave one address, which the compiler turns into a
+ * whole-wave reduction (s_or_saveexec_b64 ..., -1, unimplemented in shadPS4
+ * at the time of writing) and one lane's atomic.
  *
  * Before dispatching, the test checks that the shader binary allocates the
  * LDS it uses: lds[256] of uint is 1 KiB, COMPUTE_PGM_RSRC2.LDS_SIZE = 2
@@ -34,7 +39,9 @@ enum {
     WORD_COUNT = WORKGROUP_SIZE * GROUPS_X,
     BUFFER_BYTES = WORD_COUNT * sizeof(uint32_t),
     BUCKETS = 64,
-    COUNTER_WORDS = BUCKETS + GROUPS_X,
+    SUM_SLOTS = 4,
+    SUM_WORDS = GROUPS_X * SUM_SLOTS,
+    COUNTER_WORDS = BUCKETS + SUM_WORDS,
     COUNTER_BYTES = COUNTER_WORDS * sizeof(uint32_t),
     GUARD_BYTES = ST_PAGE_BYTES,
     GUARD_WORDS = GUARD_BYTES / sizeof(uint32_t),
@@ -47,6 +54,8 @@ enum {
 };
 
 _Static_assert((BUCKETS & (BUCKETS - 1)) == 0, "buckets are v & (BUCKETS - 1)");
+_Static_assert((SUM_SLOTS & (SUM_SLOTS - 1)) == 0,
+               "sum slots are lid & (SUM_SLOTS - 1)");
 _Static_assert(WORKGROUP_SIZE * sizeof(uint32_t) % 512 == 0,
                "the shared array is a whole number of LDS blocks");
 
@@ -70,6 +79,12 @@ static uint32_t mix(uint32_t v, uint32_t i) {
 static uint32_t exchanged_index(uint32_t i) {
     const uint32_t lid = i % WORKGROUP_SIZE;
     return i - lid + (WORKGROUP_SIZE - 1 - lid);
+}
+
+/* The partial-sum slot invocation i adds to, relative to the first sum. */
+static uint32_t sum_slot(uint32_t i) {
+    return (i / WORKGROUP_SIZE) * SUM_SLOTS +
+           (i % WORKGROUP_SIZE) % SUM_SLOTS;
 }
 
 static uint32_t counter_initial(uint32_t k) {
@@ -160,19 +175,19 @@ int main(void) {
     StCase* guard_case = &cases[4];
 
     uint32_t expected_histogram[BUCKETS];
-    uint32_t expected_sum[GROUPS_X];
+    uint32_t expected_sum[SUM_WORDS];
     for (uint32_t b = 0; b < BUCKETS; ++b) {
         expected_histogram[b] = counter_initial(b);
     }
-    for (uint32_t g = 0; g < GROUPS_X; ++g) {
-        expected_sum[g] = counter_initial(BUCKETS + g);
+    for (uint32_t s = 0; s < SUM_WORDS; ++s) {
+        expected_sum[s] = counter_initial(BUCKETS + s);
     }
 
     uint32_t checksum = 0x811c9dc5u;
     for (uint32_t i = 0; i < WORD_COUNT; ++i) {
         const uint32_t v = input_value(exchanged_index(i));
         expected_histogram[v & (BUCKETS - 1)] += 1;
-        expected_sum[i / WORKGROUP_SIZE] += v;
+        expected_sum[sum_slot(i)] += v;
 
         const uint32_t expected = mix(v, i);
         const uint32_t got = dst[i];
@@ -203,14 +218,14 @@ int main(void) {
                          b, expected_histogram[b], got);
         }
     }
-    for (uint32_t g = 0; g < GROUPS_X; ++g) {
-        const uint32_t k = BUCKETS + g;
+    for (uint32_t s = 0; s < SUM_WORDS; ++s) {
+        const uint32_t k = BUCKETS + s;
         const uint32_t got = counters[k];
-        if (got != expected_sum[g]) {
+        if (got != expected_sum[s]) {
             st_case_note(group_sum,
                          got == counter_initial(k) ? "counter_untouched"
                                                    : "group_sum_mismatch",
-                         k, expected_sum[g], got);
+                         k, expected_sum[s], got);
         }
     }
 
