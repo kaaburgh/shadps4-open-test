@@ -86,7 +86,7 @@ Stage-0 build dependencies:
 
 - OpenOrbis PS4 Toolchain v0.5.4: guest compiler/sysroot/link/runtime inputs;
 - OpenGNM: GNM implementation/API, MIT; pinned to the kaaburgh/opengnm fork, which carries fixes not yet upstream;
-- opengnm-psbc: SPIR-V -> PS4 GFX7 shader compiler, MIT project with vendored Mesa code; pinned to the kaaburgh/opengnm-psbc fork, which adds the buffer-resource ABI documented in [docs/psbc-resource-abi.md](docs/psbc-resource-abi.md);
+- opengnm-psbc: SPIR-V -> PS4 GFX7 shader compiler, MIT project with vendored Mesa code; pinned to the kaaburgh/opengnm-psbc fork, which adds the buffer-resource ABI documented in [docs/psbc-resource-abi.md](docs/psbc-resource-abi.md) and the per-workgroup LDS limit that compute shaders with shared memory need;
 - SPIRV-Headers and Vulkan-Headers: host-side psbc build inputs;
 - `glslc`: GLSL -> SPIR-V.
 
