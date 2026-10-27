@@ -86,7 +86,7 @@ Stage-0 build dependencies:
 
 - OpenOrbis PS4 Toolchain v0.5.4: guest compiler/sysroot/link/runtime inputs;
 - OpenGNM: GNM implementation/API, MIT; pinned to the kaaburgh/opengnm fork, which carries fixes not yet upstream;
-- opengnm-psbc: SPIR-V -> PS4 GFX7 shader compiler, MIT project with vendored Mesa code; pinned to the kaaburgh/opengnm-psbc fork, which adds the buffer-resource ABI documented in [docs/psbc-resource-abi.md](docs/psbc-resource-abi.md);
+- opengnm-psbc: SPIR-V -> PS4 GFX7 shader compiler, MIT project with vendored Mesa code; pinned to the kaaburgh/opengnm-psbc fork, which adds the buffer-resource ABI documented in [docs/psbc-resource-abi.md](docs/psbc-resource-abi.md) and uses the real GCN LDS, register and wave-size limits;
 - SPIRV-Headers and Vulkan-Headers: host-side psbc build inputs;
 - `glslc`: GLSL -> SPIR-V.
 
@@ -152,6 +152,8 @@ the table.
 If an executable built from `OPENGNM_PSBC_BASE_SHA` is available, pass it as
 `--baseline-psbc /path/to/opengnm-psbc` to additionally require byte-identical output for the
 resource-free `gpu_solid_rt` vertex and fragment shaders. CI does this on every pull request.
+The baseline also gets the fork commits in `OPENGNM_PSBC_BASE_PICKS`, which change code
+generation outside the ABI.
 
 The expected guest output is:
 
