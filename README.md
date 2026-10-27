@@ -258,7 +258,11 @@ connections; the script waits for Xvfb to exit afterwards, so runs can be starte
 If Xvfb does not start, the script exits 2 (infrastructure failure). `XVFB_HOOK`, if set, is a
 command run in the background on the same display while the test runs: `hle_ime` uses it to press
 a key that closes the IME panel. `XVFB_SCREEN` sets the Xvfb screen (default
-`1280x720x24`).
+`1280x720x24`). `SDL_LOGGING` defaults to `video=debug`, so if SDL cannot connect to Xvfb the log
+says `Failed to connect to the X11 display server` (`... X11 (XWayland) display server` when
+`XDG_SESSION_TYPE=wayland`). Unless `SDL_VIDEO_DRIVER` is set, every run also logs `Failed to
+connect to the Wayland display server`, from SDL's Wayland probe before it picks X11; that line
+is expected.
 
 ### All six configurations
 
