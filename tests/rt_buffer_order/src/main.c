@@ -19,10 +19,14 @@
  *   write_over_draw     draw; [B]; dispatch copies a buffer P to a range
  *                       that starts 16 KiB before M and covers it; [B];
  *                       dispatch copies M to O. O holds P's part over M.
+ *   partial_write_over_draw
+ *                       as write_over_draw, but the first dispatch only
+ *                       writes the 16 KiB before M, though its destination
+ *                       still covers M. O holds the draw's result.
  *
- * draw_then_dispatch, dma_over_draw and write_over_draw check O, a shader
- * output, so they need readbacks Precise. The other cases read T through
- * shadPS4's linear-image readback.
+ * draw_then_dispatch, dma_over_draw and the two write cases check O, a
+ * shader output, so they need readbacks Precise. The other cases read T
+ * through shadPS4's linear-image readback.
  */
 
 #define SHADTEST_NAME "rt_buffer_order"
@@ -40,13 +44,13 @@ enum {
     WORDS = WIDTH * HEIGHT,
     DMA_WORDS = 64,
     DMA_OFFSET_WORDS = 1024, /* copy_into_draw: 4 KiB into M */
-    LEAD_BYTES = 16 * 1024,  /* write_over_draw: P's range starts this far before M */
+    LEAD_BYTES = 16 * 1024,  /* write cases: P's range starts this far before M */
     BINDINGS = 2,
 };
 
 _Static_assert(TARGET_BYTES > 16 * 1024,
                "targets must be larger than shadPS4's stream threshold");
-_Static_assert(LEAD_BYTES + TARGET_BYTES <= SLOT_BYTES, "write_over_draw slot");
+_Static_assert(LEAD_BYTES + TARGET_BYTES <= SLOT_BYTES, "write case slot");
 
 enum {
     CASE_DRAW_THEN_DISPATCH,
@@ -54,6 +58,7 @@ enum {
     CASE_FILL_OVER_DRAW,
     CASE_COPY_INTO_DRAW,
     CASE_WRITE_OVER_DRAW,
+    CASE_PARTIAL_WRITE_OVER_DRAW,
     CASES,
 };
 
@@ -383,17 +388,20 @@ int main(void) {
         [CASE_FILL_OVER_DRAW] = {.name = "fill_over_draw"},
         [CASE_COPY_INTO_DRAW] = {.name = "copy_into_draw"},
         [CASE_WRITE_OVER_DRAW] = {.name = "write_over_draw"},
+        [CASE_PARTIAL_WRITE_OVER_DRAW] = {.name = "partial_write_over_draw"},
     };
 
     for (unsigned k = 0; k < CASES; ++k) {
-        /* Each case gets its own slot; write_over_draw puts M LEAD_BYTES in. */
+        /* Each case gets its own slot; the write cases put M LEAD_BYTES in. */
         uint8_t* slot = (uint8_t*)st_arena_alloc(&arena, SLOT_BYTES, SLOT_BYTES);
         volatile uint32_t* out = (volatile uint32_t*)st_arena_alloc(
             &arena, TARGET_BYTES, ST_PAGE_BYTES);
         if (!slot || !out) {
             return st_fail("reason=arena_memory case=%s", cases[k].name);
         }
-        const size_t lead = k == CASE_WRITE_OVER_DRAW ? LEAD_BYTES : 0;
+        const bool writes_over = k == CASE_WRITE_OVER_DRAW ||
+                                 k == CASE_PARTIAL_WRITE_OVER_DRAW;
+        const size_t lead = writes_over ? LEAD_BYTES : 0;
         Target t;
         if (!create_target(slot + lead, SLOT_BYTES - lead, &t)) {
             return st_fail("reason=render_target case=%s", cases[k].name);
@@ -427,12 +435,15 @@ int main(void) {
             record_masked_draw(&dcb, &t, &vs, &red_ps);
             copies_out = false;
             break;
-        case CASE_WRITE_OVER_DRAW: {
+        case CASE_WRITE_OVER_DRAW:
+        case CASE_PARTIAL_WRITE_OVER_DRAW: {
             const uint32_t bytes = LEAD_BYTES + target_bytes;
+            const uint32_t written =
+                k == CASE_WRITE_OVER_DRAW ? bytes : LEAD_BYTES;
             table[0] = st_raw_buffer(p, bytes);
             table[1] = st_raw_buffer(slot, bytes);
             st_dcb_dispatch(&dcb, &copy, table,
-                            bytes / sizeof(uint32_t) / ST_LOCAL_SIZE_X);
+                            written / sizeof(uint32_t) / ST_LOCAL_SIZE_X);
             st_dcb_barrier(&dcb, 0);
             break;
         }
@@ -441,9 +452,9 @@ int main(void) {
         }
         GnmBuffer* read_table = &table[0];
         if (copies_out) {
-            /* The write_over_draw dispatch above used table[]; give the
+            /* The write cases' dispatch above used table[]; give the
              * read its own descriptors so the CP reads them after [B]. */
-            if (k == CASE_WRITE_OVER_DRAW) {
+            if (writes_over) {
                 read_table = (GnmBuffer*)st_arena_alloc(
                     &arena, BINDINGS * sizeof(GnmBuffer), ST_PAGE_BYTES);
                 if (!read_table) {
