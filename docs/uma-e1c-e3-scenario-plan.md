@@ -230,7 +230,7 @@ infrastructure.
 | B2 | `dma_mixed_endpoints` | E3 | DMA copy shareable source → mirror-only destination | CP | P1 | placement | ✓ | ✓ | ✓ | ✓ |
 | B3 | `demotion_divergence` | E3 | A block bound shared, then demoted while the same dispatch still writes it through the chunk | shader | P2 | placement | ✓ | R | ✗ #7 | ✗ #7 |
 | B4 | `fallback_in_shared` | E3 | Chunk-crossing and non-contiguous ranges under shared backing | shader | P1 | placement | ✗ #14 (non-contiguous) at `8d07f08`; ✓ since `83584ce` | R | ✗ #14 (non-contiguous) at `8d07f08`; ✓ since `83584ce` | R (fallback ranges; control ✓) |
-| B5 | `image_source_same_submit` | E3 | Compute writes, then a draw initializes its RT from those bytes in the same submit | RT | P1 | — | ✗ #4 | ✓ | ✓ | ✓ |
+| B5 | `image_source_same_submit` | E3 | Compute writes, then a draw initializes its RT from those bytes in the same submit; case `draw_then_dispatch`: a draw, then a dispatch reads the RT bytes | RT (`draw_then_dispatch`: shader) | P1 | — | ✗ #4 before kaaburgh/shadPS4#48, ✓ with it | ✓ (`draw_then_dispatch` R) | ✓ (`draw_then_dispatch` not measured) | same |
 | B6 | `cross_queue_wait` | E3/E1C | GFX `WAIT_REG_MEM` on a flag an ASC dispatch writes, producer parsed later | CP label + shader | P2 | ASC | ✓ | R hang | ✓ | ✓ |
 | B7 | `bda_remap` | E3 | BDA read across unmap/remap | shader | spike | `directMemoryAccess`, shader | ? | R | ? | ? |
 
@@ -610,6 +610,21 @@ diagnostic here rather than R.
 - Shared ✓ in all three readbacks modes (measured), as the multi-submit `image_buffer_alias`
   case already was.
 - The guard mutant fails in shared mode (measured: `rt_saw_stale_memory`).
+- kaaburgh/shadPS4#48 fixes #4 for the mirror: mirror Precise ✓ (measured).
+
+**Case `draw_then_dispatch`.** The other direction, also in one DCB:
+1. The CPU writes `M`.
+2. An R-only draw goes to the linear RT over `M`.
+3. **[B]** after the draw, with a CB flush.
+4. A dispatch copies `M` to a buffer `O`.
+
+**Oracle.** `O` holds R = 90 and the CPU's G/B/A (shader output, so readbacks Precise only).
+shadPS4 records the draw into an image, and the dispatch must read `M` from that image rather
+than from the bytes the CPU wrote.
+
+**Expected.** Mirror Precise ✗ before kaaburgh/shadPS4#48 (measured: `buffer_saw_stale_memory`
+on `efbc560`), ✓ with it, also with `readback_linear_images_enabled` off. Mirror Relaxed/Disabled
+R (`copy_unwritten`). Shared backing not measured.
 
 ### B6 `cross_queue_wait`
 
@@ -679,7 +694,7 @@ reference shadPS4.
 
 | Issue | Scenarios |
 |---|---|
-| kaaburgh/shadPS4#4 (image/buffer alias) | B5 (mirror Precise) |
+| kaaburgh/shadPS4#4 (image/buffer alias; fixed for the mirror in kaaburgh/shadPS4#48) | B5 (mirror Precise) |
 | kaaburgh/shadPS4#5 (physical aliases, mirror) | B1 |
 | kaaburgh/shadPS4#7 (demotion) | B3 |
 | kaaburgh/shadPS4#8 (per-VA tracking) | B1 non-contiguous |
