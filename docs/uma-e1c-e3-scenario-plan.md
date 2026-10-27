@@ -230,7 +230,7 @@ infrastructure.
 | B2 | `dma_mixed_endpoints` | E3 | DMA copy shareable source → mirror-only destination | CP | P1 | placement | ✓ | ✓ | ✓ | ✓ |
 | B3 | `demotion_divergence` | E3 | A block bound shared, then demoted while the same dispatch still writes it through the chunk | shader | P2 | placement | ✓ | R | ✗ #7 | ✗ #7 |
 | B4 | `fallback_in_shared` | E3 | Chunk-crossing and non-contiguous ranges under shared backing | shader | P1 | placement | ✗ #14 (non-contiguous) at `8d07f08`; ✓ since `83584ce` | R | ✗ #14 (non-contiguous) at `8d07f08`; ✓ since `83584ce` | R (fallback ranges; control ✓) |
-| B5 | `image_source_same_submit` | E3 | Compute writes, then a draw initializes its RT from those bytes in the same submit | RT | P1 | — | ✗ #4 | ✓ | ✓ | ✓ |
+| B5 | `image_source_same_submit` | E3 | Compute writes, then a draw initializes its RT from those bytes in the same submit | RT | P1 | — | ✗ #4 before kaaburgh/shadPS4#48, ✓ with it | ✓ | ✓ | ✓ |
 | B6 | `cross_queue_wait` | E3/E1C | GFX `WAIT_REG_MEM` on a flag an ASC dispatch writes, producer parsed later | CP label + shader | P2 | ASC | ✓ | R hang | ✓ | ✓ |
 | B7 | `bda_remap` | E3 | BDA read across unmap/remap | shader | spike | `directMemoryAccess`, shader | ? | R | ? | ? |
 
@@ -610,6 +610,11 @@ diagnostic here rather than R.
 - Shared ✓ in all three readbacks modes (measured), as the multi-submit `image_buffer_alias`
   case already was.
 - The guard mutant fails in shared mode (measured: `rt_saw_stale_memory`).
+- kaaburgh/shadPS4#48 fixes #4 for the mirror: mirror Precise ✓ (measured).
+
+The other direction (a draw, then a dispatch or DMA over the same bytes in one DCB) is covered by
+`rt_buffer_order`, and tiled targets read back as raw buffers by `tiled_rt_buffer_read`. Their
+buffer-read checks are shader output, so they need readbacks Precise.
 
 ### B6 `cross_queue_wait`
 
@@ -679,7 +684,7 @@ reference shadPS4.
 
 | Issue | Scenarios |
 |---|---|
-| kaaburgh/shadPS4#4 (image/buffer alias) | B5 (mirror Precise) |
+| kaaburgh/shadPS4#4 (image/buffer alias; fixed for the mirror in kaaburgh/shadPS4#48) | B5 (mirror Precise); also `rt_buffer_order` and `tiled_rt_buffer_read` |
 | kaaburgh/shadPS4#5 (physical aliases, mirror) | B1 |
 | kaaburgh/shadPS4#7 (demotion) | B3 |
 | kaaburgh/shadPS4#8 (per-VA tracking) | B1 non-contiguous |

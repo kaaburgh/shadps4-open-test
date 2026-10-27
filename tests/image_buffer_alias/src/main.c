@@ -24,6 +24,13 @@
  *                                        reads the bytes back (the GPU side,
  *                                        no CPU read until the end)
  *
+ * buffer_read_after_rt_readback:
+ *   draw the pattern; compute reads the target; R-only draw, which shadPS4
+ *   writes back to guest memory at the fence; the CPU writes one word; compute
+ *   reads the target again and must see the second draw and the CPU's word.
+ *   On shadPS4 this needs readback_linear_images_enabled (the runner's config
+ *   sets it): without the readback, the CPU write discards the second draw.
+ *
  * Within a case nothing reads the target from the CPU until the case's own
  * checks: on shadPS4 any CPU read of GPU-written memory downloads a whole
  * 512 KiB window, which can include other cases' targets.
@@ -68,6 +75,9 @@ static uint32_t transform(uint32_t v, uint32_t i) {
 static uint32_t source_word(uint32_t i) {
     return (i * 0x9E3779B1u) ^ 0x0BADF00Du;
 }
+
+/* What the CPU writes over the first word in buffer_read_after_rt_readback. */
+static const uint32_t CPU_WORD = 0x13579bdfu;
 
 /* ------------------------------------------------------------------------ */
 /* Graphics shaders (vertex/pixel), same loading as gpu_solid_rt             */
@@ -526,8 +536,9 @@ int main(void) {
     }
 
     Target a;
+    Target b;
     Target targets[DRAW_CASES];
-    if (!create_target(&arena, &a)) {
+    if (!create_target(&arena, &a) || !create_target(&arena, &b)) {
         return st_fail("reason=render_target");
     }
     for (unsigned k = 0; k < DRAW_CASES; ++k) {
@@ -540,9 +551,11 @@ int main(void) {
     }
 
     /* tables: rt_to_buffer, then per draw case a write table (source ->
-     * target) and a read table (target -> read_back). */
+     * target) and a read table (target -> read_back), then
+     * buffer_read_after_rt_readback's (b -> b_first, b -> b_out). */
+    enum { READBACK_TABLE = 1 + 2 * DRAW_CASES };
     GnmBuffer* tables = (GnmBuffer*)st_arena_alloc(
-        &arena, (1 + 2 * DRAW_CASES) * BINDINGS * sizeof(GnmBuffer),
+        &arena, (READBACK_TABLE + 2) * BINDINGS * sizeof(GnmBuffer),
         ST_PAGE_BYTES);
     volatile uint32_t* out = (volatile uint32_t*)st_arena_alloc(
         &arena, a.words * sizeof(uint32_t), ST_PAGE_BYTES);
@@ -550,11 +563,18 @@ int main(void) {
         &arena, a.words * sizeof(uint32_t), ST_PAGE_BYTES);
     volatile uint32_t* source = (volatile uint32_t*)st_arena_alloc(
         &arena, a.words * sizeof(uint32_t), ST_PAGE_BYTES);
-    if (!tables || !out || !read_back || !source) {
+    /* buffer_read_after_rt_readback: the first read goes to b_first, the
+     * checked second read to b_out. */
+    volatile uint32_t* b_first = (volatile uint32_t*)st_arena_alloc(
+        &arena, b.words * sizeof(uint32_t), ST_PAGE_BYTES);
+    volatile uint32_t* b_out = (volatile uint32_t*)st_arena_alloc(
+        &arena, b.words * sizeof(uint32_t), ST_PAGE_BYTES);
+    if (!tables || !out || !read_back || !source || !b_first || !b_out) {
         return st_fail("reason=arena_memory");
     }
     st_fill_words(out, a.words, POISON);
     st_fill_words(read_back, a.words, POISON);
+    st_fill_words(b_out, b.words, POISON);
     for (uint32_t i = 0; i < a.words; ++i) {
         source[i] = source_word(i);
     }
@@ -570,11 +590,22 @@ int main(void) {
                                       targets[k].words * sizeof(uint32_t));
         read_table[1] = st_raw_buffer(read_back, a.words * sizeof(uint32_t));
     }
+    tables[READBACK_TABLE * BINDINGS] =
+        st_raw_buffer(b.pixels, b.words * sizeof(uint32_t));
+    tables[READBACK_TABLE * BINDINGS + 1] =
+        st_raw_buffer(b_first, b.words * sizeof(uint32_t));
+    tables[(READBACK_TABLE + 1) * BINDINGS] =
+        st_raw_buffer(b.pixels, b.words * sizeof(uint32_t));
+    tables[(READBACK_TABLE + 1) * BINDINGS + 1] =
+        st_raw_buffer(b_out, b.words * sizeof(uint32_t));
 
-    CaseResult cases[1 + DRAW_CASES] = {{.name = "rt_to_buffer"}};
+    enum { CASES = 2 + DRAW_CASES };
+    CaseResult cases[CASES] = {{.name = "rt_to_buffer"}};
     for (unsigned k = 0; k < DRAW_CASES; ++k) {
         cases[1 + k].name = DRAW_CASE_SPECS[k].name;
     }
+    CaseResult* readback_case = &cases[1 + DRAW_CASES];
+    readback_case->name = "buffer_read_after_rt_readback";
 
     /* rt_to_buffer. No GPU agent cached a's lines before the draw; on
      * hardware a CB write followed by a shader read may otherwise need a
@@ -627,10 +658,49 @@ int main(void) {
         }
     }
 
+    /* buffer_read_after_rt_readback. Only the second dispatch is checked. */
+    if (!draw_and_wait(&queue, &b, &vs, &pattern_ps, 0x0f) ||
+        !st_dispatch_and_wait(&queue, &transform_cs,
+                              &tables[READBACK_TABLE * BINDINGS],
+                              b.words / ST_LOCAL_SIZE_X) ||
+        !draw_and_wait(&queue, &b, &vs, &red_ps, 0x01)) {
+        return st_fail("reason=submit case=%s", readback_case->name);
+    }
+    b.pixels[0] = CPU_WORD;
+    if (!st_dispatch_and_wait(&queue, &transform_cs,
+                              &tables[(READBACK_TABLE + 1) * BINDINGS],
+                              b.words / ST_LOCAL_SIZE_X)) {
+        return st_fail("reason=submit case=%s", readback_case->name);
+    }
+    for (uint32_t i = 0; i < b.words; ++i) {
+        const uint32_t x = i % b.pitch;
+        const uint32_t y = i / b.pitch;
+        if (x >= WIDTH) {
+            continue;
+        }
+        const uint32_t pattern = pixel_pattern(x, y);
+        const uint32_t pixel =
+            i == 0 ? CPU_WORD : (pattern & 0xffffff00u) | RED_VALUE;
+        const uint32_t expected = transform(pixel, i);
+        const uint32_t got = b_out[i];
+        if (got == expected) {
+            continue;
+        }
+        const char* reason = "buffer_mismatch";
+        if (got == POISON) {
+            reason = "buffer_unwritten";
+        } else if (got == transform(pattern, i)) {
+            reason = "buffer_saw_first_draw";
+        } else if (i != 0 && got == transform(CPU_WORD, i)) {
+            reason = "cpu_word_elsewhere";
+        }
+        note(readback_case, reason, i, b.pitch, expected, got);
+    }
+
     unsigned failed = 0;
     const CaseResult* first = NULL;
     char failed_names[160] = "";
-    for (unsigned k = 0; k < 1 + DRAW_CASES; ++k) {
+    for (unsigned k = 0; k < CASES; ++k) {
         report(&cases[k]);
         if (cases[k].reason) {
             failed += 1;
@@ -657,8 +727,8 @@ int main(void) {
     for (unsigned k = 0; k < DRAW_CASES; ++k) {
         checksum = fnv1a_words(checksum, targets[k].pixels, targets[k].words);
     }
-    st_emit_marker("PASS", "cases=%u pitch=%u checksum=%08x",
-                   (unsigned)(1 + DRAW_CASES), a.pitch, checksum);
+    st_emit_marker("PASS", "cases=%u pitch=%u checksum=%08x", (unsigned)CASES,
+                   a.pitch, checksum);
 
     free(red_ps.stage);
     free(pattern_ps.stage);
