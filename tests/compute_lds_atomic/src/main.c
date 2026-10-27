@@ -15,16 +15,18 @@
  * non-zero values, so an atomic that stores instead of adding fails too, and
  * the sums wrap modulo 2^32 like the GPU's.
  *
- * Each atomic address differs between lanes. One sum per workgroup would
- * give the whole wave one address, which the compiler turns into a
+ * Neither atomic has the same address on every lane of a wave; the sums
+ * still put 16 lanes of each wave on one address. One sum per workgroup
+ * would give the whole wave one address, which the compiler turns into a
  * whole-wave reduction (s_or_saveexec_b64 ..., -1, unimplemented in shadPS4
  * at the time of writing) and one lane's atomic.
  *
- * Before dispatching, the test checks that the shader binary allocates the
- * LDS it uses: lds[256] of uint is 1 KiB, COMPUTE_PGM_RSRC2.LDS_SIZE = 2
- * (512-byte blocks). shadPS4 sizes the shader's shared memory from that
- * field. opengnm-psbc before kaaburgh/opengnm-psbc d545621 aborted on any
- * shader with shared memory instead of producing a binary.
+ * Before dispatching, the test checks that the shader binary allocates at
+ * least the LDS it uses: lds[256] of uint is 1 KiB, COMPUTE_PGM_RSRC2.LDS_SIZE
+ * >= 2 (512-byte blocks). shadPS4 sizes the shader's shared memory from that
+ * field. opengnm-psbc before kaaburgh/opengnm-psbc#4 aborted on any shader
+ * with shared memory instead of producing a binary. It also checks the
+ * workgroup size, which the shader hard-codes and the CPU reference assumes.
  *
  * Layout (one block, page aligned): guard src guard dst guard counters guard,
  * with 4 KiB guards and 64 KiB src/dst.
@@ -110,12 +112,20 @@ int main(void) {
         return st_fail("reason=shader_load");
     }
 
-    /* A binary without the LDS allocation would run with no shared memory;
-     * report that instead of dispatching it. */
-    const uint32_t rsrc2 = shader.shader->registers.computepgmrsrc2;
-    if (G_00B84C_LDS_SIZE(rsrc2) != LDS_BLOCKS) {
-        return st_fail("reason=lds_size got=%u expected=%u rsrc2=%08x",
-                       G_00B84C_LDS_SIZE(rsrc2), (unsigned)LDS_BLOCKS, rsrc2);
+    /* A binary with too small an LDS allocation would run with too little
+     * shared memory, and one built for another workgroup size would not
+     * match the CPU reference; report either instead of dispatching it. */
+    const GnmCsStageRegisters* regs = &shader.shader->registers;
+    if (G_00B84C_LDS_SIZE(regs->computepgmrsrc2) < LDS_BLOCKS) {
+        return st_fail("reason=lds_size got=%u need=%u rsrc2=%08x",
+                       G_00B84C_LDS_SIZE(regs->computepgmrsrc2),
+                       (unsigned)LDS_BLOCKS, regs->computepgmrsrc2);
+    }
+    if (regs->computenumthreadx != WORKGROUP_SIZE ||
+        regs->computenumthready != 1 || regs->computenumthreadz != 1) {
+        return st_fail("reason=workgroup_size got=%ux%ux%u expected=%ux1x1",
+                       regs->computenumthreadx, regs->computenumthready,
+                       regs->computenumthreadz, (unsigned)WORKGROUP_SIZE);
     }
 
     GnmBuffer* table = (GnmBuffer*)st_arena_alloc(
