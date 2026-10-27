@@ -626,6 +626,12 @@ than from the bytes the CPU wrote.
 on `efbc560`), ✓ with it, also with `readback_linear_images_enabled` off. Mirror Relaxed/Disabled
 R (`copy_unwritten`). Shared backing not measured.
 
+**Case `dma_over_draw`.** As `draw_then_dispatch`, with a DMA copy of 256 CPU bytes over the
+start of `M` between the draw (**[B]** with a CB flush first) and the dispatch (**[B]** after
+it). `O` must hold the DMA bytes, then the draw's result. shadPS4 marks the target dirty when
+the DMA is recorded, so the image must reach the buffer before that. **Expected:** mirror
+Precise ✗ before kaaburgh/shadPS4#48 (`buffer_saw_stale_memory`), ✓ with it; Relaxed/Disabled R.
+
 ### B6 `cross_queue_wait`
 
 **Purpose.** Cross-queue progress for `WAIT_REG_MEM` (P2 in the E3 review, fixed in `a393f8d`).
