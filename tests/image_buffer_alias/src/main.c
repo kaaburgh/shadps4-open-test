@@ -28,6 +28,8 @@
  *   draw the pattern; compute reads the target; R-only draw, which shadPS4
  *   writes back to guest memory at the fence; the CPU writes one word; compute
  *   reads the target again and must see the second draw and the CPU's word.
+ *   On shadPS4 this needs readback_linear_images_enabled (the runner's config
+ *   sets it): without the readback, the CPU write discards the second draw.
  *
  * Within a case nothing reads the target from the CPU until the case's own
  * checks: on shadPS4 any CPU read of GPU-written memory downloads a whole
@@ -550,10 +552,10 @@ int main(void) {
 
     /* tables: rt_to_buffer, then per draw case a write table (source ->
      * target) and a read table (target -> read_back), then
-     * buffer_read_after_rt_readback's (b -> b_out). */
+     * buffer_read_after_rt_readback's (b -> b_first, b -> b_out). */
     enum { READBACK_TABLE = 1 + 2 * DRAW_CASES };
     GnmBuffer* tables = (GnmBuffer*)st_arena_alloc(
-        &arena, (READBACK_TABLE + 1) * BINDINGS * sizeof(GnmBuffer),
+        &arena, (READBACK_TABLE + 2) * BINDINGS * sizeof(GnmBuffer),
         ST_PAGE_BYTES);
     volatile uint32_t* out = (volatile uint32_t*)st_arena_alloc(
         &arena, a.words * sizeof(uint32_t), ST_PAGE_BYTES);
@@ -561,13 +563,18 @@ int main(void) {
         &arena, a.words * sizeof(uint32_t), ST_PAGE_BYTES);
     volatile uint32_t* source = (volatile uint32_t*)st_arena_alloc(
         &arena, a.words * sizeof(uint32_t), ST_PAGE_BYTES);
+    /* buffer_read_after_rt_readback: the first read goes to b_first, the
+     * checked second read to b_out. */
+    volatile uint32_t* b_first = (volatile uint32_t*)st_arena_alloc(
+        &arena, b.words * sizeof(uint32_t), ST_PAGE_BYTES);
     volatile uint32_t* b_out = (volatile uint32_t*)st_arena_alloc(
         &arena, b.words * sizeof(uint32_t), ST_PAGE_BYTES);
-    if (!tables || !out || !read_back || !source || !b_out) {
+    if (!tables || !out || !read_back || !source || !b_first || !b_out) {
         return st_fail("reason=arena_memory");
     }
     st_fill_words(out, a.words, POISON);
     st_fill_words(read_back, a.words, POISON);
+    st_fill_words(b_out, b.words, POISON);
     for (uint32_t i = 0; i < a.words; ++i) {
         source[i] = source_word(i);
     }
@@ -586,6 +593,10 @@ int main(void) {
     tables[READBACK_TABLE * BINDINGS] =
         st_raw_buffer(b.pixels, b.words * sizeof(uint32_t));
     tables[READBACK_TABLE * BINDINGS + 1] =
+        st_raw_buffer(b_first, b.words * sizeof(uint32_t));
+    tables[(READBACK_TABLE + 1) * BINDINGS] =
+        st_raw_buffer(b.pixels, b.words * sizeof(uint32_t));
+    tables[(READBACK_TABLE + 1) * BINDINGS + 1] =
         st_raw_buffer(b_out, b.words * sizeof(uint32_t));
 
     enum { CASES = 2 + DRAW_CASES };
@@ -648,15 +659,16 @@ int main(void) {
     }
 
     /* buffer_read_after_rt_readback. Only the second dispatch is checked. */
-    GnmBuffer* readback_table = &tables[READBACK_TABLE * BINDINGS];
     if (!draw_and_wait(&queue, &b, &vs, &pattern_ps, 0x0f) ||
-        !st_dispatch_and_wait(&queue, &transform_cs, readback_table,
+        !st_dispatch_and_wait(&queue, &transform_cs,
+                              &tables[READBACK_TABLE * BINDINGS],
                               b.words / ST_LOCAL_SIZE_X) ||
         !draw_and_wait(&queue, &b, &vs, &red_ps, 0x01)) {
         return st_fail("reason=submit case=%s", readback_case->name);
     }
     b.pixels[0] = CPU_WORD;
-    if (!st_dispatch_and_wait(&queue, &transform_cs, readback_table,
+    if (!st_dispatch_and_wait(&queue, &transform_cs,
+                              &tables[(READBACK_TABLE + 1) * BINDINGS],
                               b.words / ST_LOCAL_SIZE_X)) {
         return st_fail("reason=submit case=%s", readback_case->name);
     }
@@ -675,7 +687,9 @@ int main(void) {
             continue;
         }
         const char* reason = "buffer_mismatch";
-        if (got == transform(pattern, i)) {
+        if (got == POISON) {
+            reason = "buffer_unwritten";
+        } else if (got == transform(pattern, i)) {
             reason = "buffer_saw_first_draw";
         } else if (i != 0 && got == transform(CPU_WORD, i)) {
             reason = "cpu_word_elsewhere";
