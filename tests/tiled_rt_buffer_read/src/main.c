@@ -24,9 +24,10 @@
  *   thin_1d      GNM_TM_THIN_1D_THIN
  *   thin_2d      GNM_TM_THIN_2D_THIN
  *
- * Reasons: copy_unwritten (O kept its poison), buffer_saw_stale_memory (O
- * holds T's poison, so the dispatch did not see the draw), linear_layout
- * (O holds the pixel at its linear offset instead), tiling_mismatch.
+ * A failure's index= is the word in O. Reasons: copy_unwritten (O kept its
+ * poison), buffer_saw_stale_memory (O holds T's poison, so the dispatch did
+ * not see the draw), linear_layout (O holds the pixel at its linear offset
+ * instead), tiling_mismatch.
  */
 
 #define SHADTEST_NAME "tiled_rt_buffer_read"
@@ -302,6 +303,10 @@ static const char* check_copy(StCase* c, const Target* t,
     }
     params.surfaceflags.display = info.tm >= GNM_TM_DISPLAY_LINEAR_ALIGNED &&
                                   info.tm <= GNM_TM_DISPLAY_2D_THIN_PRT;
+    /* sceGpaTpInit may adjust the tile mode; the CB uses the target's. */
+    if (params.tilemode != info.tm) {
+        return "tile_mode";
+    }
     if ((*err = sceGpaInitSurfaceContext(&ctx, t->bytes, &params)) !=
         GPA_ERR_OK) {
         return "surface_context";
@@ -337,7 +342,8 @@ static const char* check_copy(StCase* c, const Target* t,
                        out[linear] == expected) {
                 reason = "linear_layout";
             }
-            st_case_note(c, reason, y * WIDTH + x, expected, got);
+            st_case_note(c, reason, (uint32_t)(offset / sizeof(uint32_t)),
+                         expected, got);
         }
     }
     /* A tiled case whose addressing came out linear would not test tiling. */
@@ -409,7 +415,8 @@ int main(void) {
         if (step) {
             return st_fail("reason=addressing case=%s step=%s err=%s "
                            "tile_mode=%u pitch=%u bytes=%u",
-                           cases[k].name, step, sceGpaStrError(err),
+                           cases[k].name, step,
+                           err != GPA_ERR_OK ? sceGpaStrError(err) : "none",
                            (unsigned)t.rt.attrib.tilemode_index,
                            sceGnmRtGetPitch(&t.rt), t.bytes);
         }
