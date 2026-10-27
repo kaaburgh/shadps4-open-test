@@ -18,13 +18,20 @@
  * of the suite (it needs the dispatch and the draw in one submission).
  *
  * Cases:
- *   same_submit   the sequence above.
- *   cpu_control   control: the CPU writes M, then the R-only draw
- *                 (image_buffer_alias case rt_masked_after_cpu_write).
+ *   same_submit         the sequence above.
+ *   cpu_control         control: the CPU writes M, then the R-only draw
+ *                       (image_buffer_alias case rt_masked_after_cpu_write).
+ *   draw_then_dispatch  the other direction: the CPU writes M, then in one
+ *                       DCB the R-only draw, [B] with CB flush, and a
+ *                       dispatch that copies M to a buffer O. O must hold
+ *                       the draw's result. shadPS4 records the draw into an
+ *                       image, so the dispatch must read M from that image
+ *                       and not from the bytes the CPU wrote.
  *
  * Reuses image_buffer_alias's shaders and target setup. With the mirror,
  * image_buffer_alias case rt_masked_after_buffer_write (the same sequence in
  * two submissions) fails in readbacks Precise (kaaburgh/shadPS4#4).
+ * draw_then_dispatch reads O from the CPU, so it needs readbacks Precise.
  */
 
 #define SHADTEST_NAME "image_source_same_submit"
@@ -47,6 +54,7 @@ _Static_assert(WIDTH * HEIGHT * 4 > 16 * 1024,
 enum {
     CASE_SAME_SUBMIT,
     CASE_CPU_CONTROL,
+    CASE_DRAW_THEN_DISPATCH,
     CASES,
 };
 
@@ -306,6 +314,29 @@ static void check_target(StCase* c, const Target* t, unsigned seed) {
     }
 }
 
+/* O must be a copy of the drawn target. */
+static void check_copy(StCase* c, const volatile uint32_t* out,
+                       const Target* t, unsigned seed) {
+    for (uint32_t i = 0; i < t->words; ++i) {
+        if (i % t->pitch >= WIDTH) {
+            continue;
+        }
+        const uint32_t under = source_word(seed, i);
+        const uint32_t expected = (under & 0xffffff00u) | RED_VALUE;
+        const uint32_t got = out[i];
+        if (got == expected) {
+            continue;
+        }
+        const char* reason = "copy_mismatch";
+        if (got == POISON) {
+            reason = "copy_unwritten";
+        } else if (got == under) {
+            reason = "buffer_saw_stale_memory";
+        }
+        st_case_note(c, reason, i, expected, got);
+    }
+}
+
 int main(void) {
     st_begin();
 
@@ -333,13 +364,16 @@ int main(void) {
         &arena, BINDINGS * sizeof(GnmBuffer), ST_PAGE_BYTES);
     volatile uint32_t* source =
         (volatile uint32_t*)st_arena_alloc(&arena, SLOT_BYTES, SLOT_BYTES);
-    if (!table || !source) {
+    volatile uint32_t* copied =
+        (volatile uint32_t*)st_arena_alloc(&arena, SLOT_BYTES, SLOT_BYTES);
+    if (!table || !source || !copied) {
         return st_fail("reason=arena_memory");
     }
 
     StCase cases[CASES] = {
         [CASE_SAME_SUBMIT] = {.name = "same_submit"},
         [CASE_CPU_CONTROL] = {.name = "cpu_control"},
+        [CASE_DRAW_THEN_DISPATCH] = {.name = "draw_then_dispatch"},
     };
 
     for (unsigned k = 0; k < CASES; ++k) {
@@ -367,8 +401,18 @@ int main(void) {
             }
         }
         record_masked_draw(&dcb, &t, &vs, &red_ps);
+        if (k == CASE_DRAW_THEN_DISPATCH) {
+            st_fill_words(copied, t.words, POISON);
+            table[0] = st_raw_buffer(t.pixels, t.words * sizeof(uint32_t));
+            table[1] = st_raw_buffer(copied, t.words * sizeof(uint32_t));
+            st_dcb_barrier(&dcb, ST_PM4_BARRIER_AFTER_DRAW | ST_PM4_BARRIER_CB);
+            st_dcb_dispatch(&dcb, &copy, table, t.words / ST_LOCAL_SIZE_X);
+        }
         if (!st_dcb_submit_and_wait(&dcb)) {
             return st_fail("reason=submit_or_eop case=%s", cases[k].name);
+        }
+        if (k == CASE_DRAW_THEN_DISPATCH) {
+            check_copy(&cases[k], copied, &t, k);
         }
         check_target(&cases[k], &t, k);
     }
