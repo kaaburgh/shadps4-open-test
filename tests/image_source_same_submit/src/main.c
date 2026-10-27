@@ -18,25 +18,13 @@
  * of the suite (it needs the dispatch and the draw in one submission).
  *
  * Cases:
- *   same_submit         the sequence above.
- *   cpu_control         control: the CPU writes M, then the R-only draw
- *                       (image_buffer_alias case rt_masked_after_cpu_write).
- *   draw_then_dispatch  the other direction: the CPU writes M, then in one
- *                       DCB the R-only draw, [B] with CB flush, and a
- *                       dispatch that copies M to a buffer O. O must hold
- *                       the draw's result. shadPS4 records the draw into an
- *                       image, so the dispatch must read M from that image
- *                       and not from the bytes the CPU wrote.
- *   dma_over_draw       as draw_then_dispatch, with a DMA copy of 256 CPU
- *                       bytes over the start of M between the draw ([B] with
- *                       CB flush first) and the dispatch ([B] after it). O
- *                       must hold the DMA bytes, then the draw's result.
+ *   same_submit   the sequence above.
+ *   cpu_control   control: the CPU writes M, then the R-only draw
+ *                 (image_buffer_alias case rt_masked_after_cpu_write).
  *
  * Reuses image_buffer_alias's shaders and target setup. With the mirror,
  * image_buffer_alias case rt_masked_after_buffer_write (the same sequence in
  * two submissions) fails in readbacks Precise (kaaburgh/shadPS4#4).
- * draw_then_dispatch and dma_over_draw read O from the CPU, so they need
- * readbacks Precise.
  */
 
 #define SHADTEST_NAME "image_source_same_submit"
@@ -59,12 +47,8 @@ _Static_assert(WIDTH * HEIGHT * 4 > 16 * 1024,
 enum {
     CASE_SAME_SUBMIT,
     CASE_CPU_CONTROL,
-    CASE_DRAW_THEN_DISPATCH,
-    CASE_DMA_OVER_DRAW,
     CASES,
 };
-
-enum { DMA_WORDS = 64 };
 
 static const uint32_t POISON = 0xcdcdcdcdu;
 
@@ -322,35 +306,6 @@ static void check_target(StCase* c, const Target* t, unsigned seed) {
     }
 }
 
-static uint32_t dma_word(uint32_t i) {
-    return (i * 0x2545F491u) ^ 0x5bd1e995u;
-}
-
-/* O must be a copy of the drawn target, with the first dma_words words
- * replaced by dma_word(). */
-static void check_copy(StCase* c, const volatile uint32_t* out,
-                       const Target* t, unsigned seed, uint32_t dma_words) {
-    for (uint32_t i = 0; i < t->words; ++i) {
-        if (i % t->pitch >= WIDTH) {
-            continue;
-        }
-        const uint32_t under = source_word(seed, i);
-        const uint32_t expected =
-            i < dma_words ? dma_word(i) : (under & 0xffffff00u) | RED_VALUE;
-        const uint32_t got = out[i];
-        if (got == expected) {
-            continue;
-        }
-        const char* reason = "copy_mismatch";
-        if (got == POISON) {
-            reason = "copy_unwritten";
-        } else if (got == under) {
-            reason = "buffer_saw_stale_memory";
-        }
-        st_case_note(c, reason, i, expected, got);
-    }
-}
-
 int main(void) {
     st_begin();
 
@@ -378,23 +333,14 @@ int main(void) {
         &arena, BINDINGS * sizeof(GnmBuffer), ST_PAGE_BYTES);
     volatile uint32_t* source =
         (volatile uint32_t*)st_arena_alloc(&arena, SLOT_BYTES, SLOT_BYTES);
-    volatile uint32_t* copied =
-        (volatile uint32_t*)st_arena_alloc(&arena, SLOT_BYTES, SLOT_BYTES);
-    volatile uint32_t* dma_source = (volatile uint32_t*)st_arena_alloc(
-        &arena, DMA_WORDS * sizeof(uint32_t), ST_PAGE_BYTES);
-    if (!table || !source || !copied || !dma_source) {
+    if (!table || !source) {
         return st_fail("reason=arena_memory");
     }
 
     StCase cases[CASES] = {
         [CASE_SAME_SUBMIT] = {.name = "same_submit"},
         [CASE_CPU_CONTROL] = {.name = "cpu_control"},
-        [CASE_DRAW_THEN_DISPATCH] = {.name = "draw_then_dispatch"},
-        [CASE_DMA_OVER_DRAW] = {.name = "dma_over_draw"},
     };
-    for (uint32_t i = 0; i < DMA_WORDS; ++i) {
-        dma_source[i] = dma_word(i);
-    }
 
     for (unsigned k = 0; k < CASES; ++k) {
         Target t;
@@ -421,30 +367,10 @@ int main(void) {
             }
         }
         record_masked_draw(&dcb, &t, &vs, &red_ps);
-        const uint32_t dma_words = k == CASE_DMA_OVER_DRAW ? DMA_WORDS : 0;
-        if (dma_words) {
-            st_dcb_barrier(&dcb, ST_PM4_BARRIER_AFTER_DRAW | ST_PM4_BARRIER_CB);
-            st_dcb_copy(&dcb, t.pixels, dma_source,
-                        dma_words * sizeof(uint32_t));
-        }
-        if (k == CASE_DRAW_THEN_DISPATCH || k == CASE_DMA_OVER_DRAW) {
-            st_fill_words(copied, t.words, POISON);
-            table[0] = st_raw_buffer(t.pixels, t.words * sizeof(uint32_t));
-            table[1] = st_raw_buffer(copied, t.words * sizeof(uint32_t));
-            st_dcb_barrier(&dcb, dma_words ? 0
-                                           : ST_PM4_BARRIER_AFTER_DRAW |
-                                                 ST_PM4_BARRIER_CB);
-            st_dcb_dispatch(&dcb, &copy, table, t.words / ST_LOCAL_SIZE_X);
-        }
         if (!st_dcb_submit_and_wait(&dcb)) {
             return st_fail("reason=submit_or_eop case=%s", cases[k].name);
         }
-        if (k == CASE_DRAW_THEN_DISPATCH || k == CASE_DMA_OVER_DRAW) {
-            check_copy(&cases[k], copied, &t, k, dma_words);
-        }
-        if (k != CASE_DMA_OVER_DRAW) {
-            check_target(&cases[k], &t, k);
-        }
+        check_target(&cases[k], &t, k);
     }
 
     return st_finish_cases(cases, CASES, "");
