@@ -12,12 +12,17 @@ OPENGNM_SHA=fbb16e2e948536ec77806d7f46e140b806cff5af
 
 # Fork of PS4-OpenGNM/opengnm-psbc a92a122 that adds the buffer-resource ABI in
 # docs/psbc-resource-abi.md (kaaburgh/opengnm-psbc#1, with #2 keeping the existing PsbcResult
-# values stable). Return to upstream once it is merged there.
+# values stable), and the real GCN LDS, register and wave-size limits and the PS5 descriptor
+# resource level (kaaburgh/opengnm-psbc#4).
+# Return to upstream once they are merged there.
 OPENGNM_PSBC_REPO=https://github.com/kaaburgh/opengnm-psbc.git
-OPENGNM_PSBC_SHA=ffcaff30d82264e979111c03a5529d56783127cb
+OPENGNM_PSBC_SHA=365a2237c4ca1c01a4977d151e775004af80ce27
 # The upstream revision the fork is based on. CI builds it as the baseline for the
 # resource-free byte-identity check of tooling/verify-psbc-resource-abi.py.
 OPENGNM_PSBC_BASE_SHA=a92a1228ea3a64e4be9f0e61c2a65a5aa7ffed92
+# Fork commits outside the resource ABI that change code generation. CI applies them to the
+# baseline too, so the identity check still compares only the ABI change.
+OPENGNM_PSBC_BASE_PICKS="936e79c7258b86a7cbab1490fa8e152fa3442ef0 365a2237c4ca1c01a4977d151e775004af80ce27"
 
 SPIRV_HEADERS_REPO=https://github.com/KhronosGroup/SPIRV-Headers.git
 SPIRV_HEADERS_SHA=86f980c731e62ae4eaf383d320449d71687936bf

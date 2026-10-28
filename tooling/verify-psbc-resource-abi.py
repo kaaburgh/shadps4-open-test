@@ -382,8 +382,8 @@ def main() -> int:
     parser.add_argument("--glslc", default="glslc")
     parser.add_argument(
         "--baseline-psbc",
-        help="optional baseline psbc executable, built from OPENGNM_PSBC_BASE_SHA, for "
-        "byte-identical resource-free comparison",
+        help="optional baseline psbc executable, built from OPENGNM_PSBC_BASE_SHA plus "
+        "OPENGNM_PSBC_BASE_PICKS, for byte-identical resource-free comparison",
     )
     args = parser.parse_args()
 
