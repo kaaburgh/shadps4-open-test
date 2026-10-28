@@ -37,7 +37,7 @@ jobs:
           set -euo pipefail
           source deps.lock
           git -C .deps/opengnm-psbc checkout -q --detach "$OPENGNM_PSBC_BASE_SHA"
-          for pick in $OPENGNM_PSBC_BASE_PICKS; do
+          for pick in ${OPENGNM_PSBC_BASE_PICKS:-}; do
             git -C .deps/opengnm-psbc cherry-pick --no-commit "$pick"
           done
           cp tooling/opengnm-psbc-linux.mak .deps/opengnm-psbc/config.mak

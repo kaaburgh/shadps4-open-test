@@ -159,7 +159,7 @@ static uint32_t ref_int(unsigned op, const volatile uint32_t* o) {
     case 4: return mul_hi_s(ia, ib);
     case 5: return (a & 0xffffff) * (b & 0xffffff);
     case 6: return mul_hi_u(a & 0xffffff, b & 0xffffff);
-    case 7: return (uint32_t)(sa24 * sb24);
+    case 7: return (uint32_t)sa24 * (uint32_t)sb24;
     case 8: return mul_hi_s(sa24, sb24);
     case 9: return a / (b | 1);
     case 10: return a % (b | 1);
@@ -269,8 +269,7 @@ static uint64_t ulp_distance64(uint64_t x, uint64_t y) {
     const int64_t m = INT64_MAX;
     const int64_t ox = (x >> 63) ? -(int64_t)(x & (uint64_t)m) : (int64_t)x;
     const int64_t oy = (y >> 63) ? -(int64_t)(y & (uint64_t)m) : (int64_t)y;
-    const int64_t d = ox > oy ? ox - oy : oy - ox;
-    return d < 0 ? UINT64_MAX : (uint64_t)d;
+    return ox > oy ? (uint64_t)ox - (uint64_t)oy : (uint64_t)oy - (uint64_t)ox;
 }
 
 /* Zero or denormal. The GPU's denormal mode depends on the shader and on the
@@ -283,14 +282,14 @@ static bool tiny64(uint64_t x) {
     return (x & 0x7ff0000000000000ull) == 0;
 }
 
-/* An f32 result matches: same bits, both NaN, or a denormal on one side and a
- * zero of either sign on the other. */
+/* An f32 result matches: same bits, both NaN, or a nonzero denormal on one side
+ * and a zero of either sign on the other. Zeros of opposite sign differ. */
 static bool match32_exact(uint32_t expected, uint32_t got) {
     if (got == expected || (is_nan32(expected) && is_nan32(got))) {
         return true;
     }
     return tiny32(expected) && tiny32(got) &&
-           ((expected & 0x7fffffffu) == 0 || (got & 0x7fffffffu) == 0);
+           (((expected & 0x7fffffffu) == 0) != ((got & 0x7fffffffu) == 0));
 }
 
 static bool match64_exact(uint64_t expected, uint64_t got) {
@@ -298,7 +297,7 @@ static bool match64_exact(uint64_t expected, uint64_t got) {
         return true;
     }
     const uint64_t m = 0x7fffffffffffffffull;
-    return tiny64(expected) && tiny64(got) && ((expected & m) == 0 || (got & m) == 0);
+    return tiny64(expected) && tiny64(got) && (((expected & m) == 0) != ((got & m) == 0));
 }
 
 static bool match32_ulp(uint32_t expected, uint32_t got, uint64_t ulps) {
@@ -310,6 +309,9 @@ static bool match32_ulp(uint32_t expected, uint32_t got, uint64_t ulps) {
     }
     if ((expected & 0x7fffffffu) == 0x7f800000u || (got & 0x7fffffffu) == 0x7f800000u) {
         return false; /* infinities must match exactly */
+    }
+    if (((expected | got) & 0x7fffffffu) == 0) {
+        return false; /* zeros of opposite sign */
     }
     return ulp_distance32(expected, got) <= ulps;
 }
@@ -500,17 +502,25 @@ static bool match_f32(unsigned op, const volatile uint32_t* o, uint32_t expected
     case 34:
     case 35:
     case 36:
-        /* GLSL leaves min, max and clamp of NaN undefined. */
-        return any_nan || match32_exact(expected, got);
+        /* GLSL leaves min, max and clamp of NaN undefined, and of +0 and -0 either may
+         * come back. */
+        return any_nan || match32_exact(expected, got) ||
+               ((expected | got) & 0x7fffffffu) == 0;
     case 14:
         if (isnan(a)) {
             return true;
         }
         return a == 0.0f ? (got & 0x7fffffffu) == 0 : got == expected;
+    case 21:
+        /* A GPU that flushes denormals gets rcp(b) = 0 for |b| > 2^126, as GCN does.
+         * Vulkan's precision for division only covers |b| in [2^-126, 2^126]. */
+        if (fabsf(b) > 0x1p126f) {
+            return true;
+        }
+        return match32_ulp(expected, got, 3);
     case 18:
     case 19:
     case 20:
-    case 21:
         return match32_ulp(expected, got, 3);
     case 22:
         /* Vulkan: 3 + 2|x| ULP. */
@@ -529,9 +539,14 @@ static bool match_f32(unsigned op, const volatile uint32_t* o, uint32_t expected
         }
         return !is_nan32(got) && fabsf(f32(got) - f32(expected)) <= 2e-3f;
     case 27:
-    case 28:
         /* frexp of an infinity or NaN is undefined. */
         return !isfinite(a) || match32_exact(expected, got);
+    case 28:
+        return !isfinite(a) || got == expected;
+    case 29:
+    case 30:
+    case 31:
+        return got == expected; /* integer results */
     default:
         return match32_exact(expected, got);
     }
@@ -680,6 +695,9 @@ static bool match_cvt(unsigned op, const volatile uint32_t* o, uint32_t expected
     const uint32_t got = row[op];
     const float x[4] = {f32(o[0]), f32(o[1]), f32(o[2]), f32(o[3])};
     switch (op) {
+    case 0:
+    case 1:
+        return got == expected; /* integer results */
     case 4: {
         /* Either half may be a NaN with any payload. */
         for (unsigned k = 0; k < 2; ++k) {

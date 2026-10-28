@@ -129,7 +129,8 @@ shaders retain their previous code-generation path.
 `tooling/verify-psbc-resource-abi.py` checks positive SSBO and UBO +
 sparse-binding cases and negative unsupported cases without an emulator. It can also compare the
 resource-free `gpu_solid_rt` shader binaries against a baseline compiler built
-from `OPENGNM_PSBC_BASE_SHA` when `--baseline-psbc` is supplied.
+from `OPENGNM_PSBC_BASE_SHA` plus the commits in `OPENGNM_PSBC_BASE_PICKS` when
+`--baseline-psbc` is supplied.
 
 ## Current implementation decisions
 
