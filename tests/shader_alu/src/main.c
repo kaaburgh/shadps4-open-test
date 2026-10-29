@@ -20,9 +20,16 @@
  * The lds case (assets/lds.comp.glsl) checks shared memory across the four
  * waves of a 256-invocation workgroup, LDS and buffer atomics, and DS_APPEND.
  *
+ * The f64_pack cases (assets/f64_pack.comp.glsl) multiply f64 values around the
+ * f32 range by 1.0, from a buffer and as shader constants. On a device without
+ * shaderFloat64 shadPS4 lowers f64 arithmetic to f32; the result line names
+ * the mode the device used (f64_mode=fp64 or lowered), and every value must
+ * match that mode bit for bit.
+ *
  * Output: one line per failing operation ("op <family>.<n> <name>: FAIL ..."
- * with the first failing operands, or "lds <check>: FAIL ..."), then one case
- * line per family variant and one for lds.
+ * with the first failing operands, "lds <check>: FAIL ..." or "pack <case>[n]:
+ * FAIL ..."), then one case line per family variant, one for lds and two for
+ * f64_pack.
  */
 
 #define SHADTEST_NAME "shader_alu"
@@ -1068,6 +1075,110 @@ static void check_lds(const volatile uint32_t* x, const volatile uint32_t* r, St
 }
 
 /* ------------------------------------------------------------------------ */
+/* f64 packing (assets/f64_pack.comp.glsl)                                   */
+/* ------------------------------------------------------------------------ */
+
+/* Values around the f32 range: biased f64 exponents 896 and 897 (below and at
+ * FLT_MIN's) and 1150 and 1151 (at and above FLT_MAX's), with zero and nonzero
+ * mantissas, and special values. Entry 0 tells the modes apart. The order
+ * matches the shader. */
+static const uint64_t PACK_VALUES[] = {
+    0x3ff0000000001000ull,                        /* 1 + 2^-40 */
+    0x3ff8000000000000ull, 0xbff8000000000000ull, /* +-1.5 */
+    0x1000000000000000ull, 0x9000000000000000ull, /* +-2^-767 */
+    0x3800000000000000ull, 0xb800000000000000ull, /* +-2^-127 */
+    0x380fffffe0000000ull, 0xb80fffffe0000000ull, /* just below FLT_MIN */
+    0x3810000000000000ull, 0xb810000000000000ull, /* +-FLT_MIN */
+    0x3810000020000001ull, 0xb810000020000001ull,
+    0x47e0000000000000ull, 0xc7e0000000000000ull, /* +-2^127 */
+    0x47efffffe0000000ull, 0xc7efffffe0000000ull, /* +-FLT_MAX */
+    0x47efffffffffffffull, 0xc7efffffffffffffull,
+    0x47f0000000000000ull, 0xc7f0000000000000ull, /* +-2^128 */
+    0x47f0000000000001ull, 0xc7f0000000000001ull,
+    0x0000000000000000ull, 0x8000000000000000ull, /* +-0 */
+    0x7ff0000000000000ull, 0xfff0000000000000ull, /* +-inf */
+    0x7ff8000000000000ull,                        /* quiet NaN */
+    0x37d0000000000000ull,                        /* 2^-130 */
+};
+enum { PACK_COUNT = sizeof(PACK_VALUES) / sizeof(PACK_VALUES[0]) };
+
+/* shadPS4's conversions when the device has no shaderFloat64
+ * (lower_fp64_to_fp32.cpp). f64 to f32 truncates the mantissa, flushes
+ * exponents below the f32 range to a signed zero and saturates exponents above
+ * it to infinity. f32 to f64 is exact for the results here. */
+static uint32_t pack_f64_to_f32(uint64_t x) {
+    const uint32_t sign = (uint32_t)(x >> 32) & 0x80000000u;
+    const int32_t exp = (int32_t)((x >> 52) & 0x7ff);
+    const uint32_t mantissa = (uint32_t)(x >> 29) & 0x7fffffu;
+    if (exp == 0x7ff) {
+        return sign | 0x7f800000u | mantissa;
+    }
+    if (exp == 0) {
+        return sign | mantissa;
+    }
+    const int32_t exp32 = exp - (1023 - 127);
+    if (exp32 <= 0) {
+        return sign;
+    }
+    if (exp32 >= 0xff) {
+        return sign | 0x7f800000u;
+    }
+    return sign | ((uint32_t)exp32 << 23) | mantissa;
+}
+
+static uint64_t unpack_f32_to_f64(uint32_t f) {
+    const uint64_t sign = (uint64_t)(f & 0x80000000u) << 32;
+    const uint32_t exp = (f >> 23) & 0xff;
+    const uint64_t mantissa = (uint64_t)(f & 0x7fffffu) << 29;
+    if (exp == 0xff) {
+        return sign | 0x7ff0000000000000ull | mantissa;
+    }
+    if (exp == 0) {
+        return sign | mantissa;
+    }
+    return sign | ((uint64_t)(exp + 1023 - 127) << 52) | mantissa;
+}
+
+/* The product of x and 1.0: x itself when the device multiplies in f64, or x
+ * through shadPS4's conversions when it lowers to f32. */
+static uint64_t pack_expected(uint64_t x, bool lowered) {
+    return lowered ? unpack_f32_to_f64(pack_f64_to_f32(x)) : x;
+}
+
+static uint64_t pack_result(const volatile uint32_t* r, unsigned slot) {
+    return (uint64_t)r[2 * slot] | ((uint64_t)r[2 * slot + 1] << 32);
+}
+
+/* Checks both variants against the mode the probe (entry 0) shows; a probe that
+ * matches neither mode fails as a lowered result. Returns the mode. */
+static const char* check_f64_pack(const volatile uint32_t* r, StCase* cases) {
+    const bool lowered = pack_result(r, 0) != PACK_VALUES[0];
+    for (unsigned variant = 0; variant < 2; ++variant) {
+        StCase* c = &cases[variant];
+        for (unsigned k = 0; k < PACK_COUNT; ++k) {
+            const unsigned slot = variant * PACK_COUNT + k;
+            const uint64_t expected = pack_expected(PACK_VALUES[k], lowered);
+            const uint64_t got = pack_result(r, slot);
+            if (got == expected || (is_nan64(expected) && is_nan64(got))) {
+                continue;
+            }
+            /* ACO folds 0 * one and may drop the sign of a zero constant. */
+            if (variant == 1 && (expected << 1) == 0 && (got << 1) == 0) {
+                continue;
+            }
+            printf("pack %s[%u]: FAIL value=%016llx expected=%016llx got=%016llx\n", c->name,
+                   k, (unsigned long long)PACK_VALUES[k], (unsigned long long)expected,
+                   (unsigned long long)got);
+            const bool high = (uint32_t)(got >> 32) != (uint32_t)(expected >> 32);
+            st_case_note(c, (uint32_t)got == POISON ? "unwritten" : "mismatch",
+                         2 * slot + high, (uint32_t)(expected >> (high ? 32 : 0)),
+                         (uint32_t)(got >> (high ? 32 : 0)));
+        }
+    }
+    return lowered ? "lowered" : "fp64";
+}
+
+/* ------------------------------------------------------------------------ */
 /* Families                                                                  */
 /* ------------------------------------------------------------------------ */
 
@@ -1178,7 +1289,7 @@ int main(void) {
         return st_fail("reason=arena_memory");
     }
 
-    StCase cases[2 * FAMILY_COUNT + 1];
+    StCase cases[2 * FAMILY_COUNT + 3];
     char names[2 * FAMILY_COUNT][32];
     unsigned failed_ops = 0;
     for (unsigned k = 0; k < FAMILY_COUNT; ++k) {
@@ -1237,7 +1348,32 @@ int main(void) {
     check_lds(operands, out, lds_case);
     st_unload_compute_shader(&lds);
 
-    char detail[48];
-    snprintf(detail, sizeof(detail), "failed_ops=%u", failed_ops);
-    return st_finish_cases(cases, 2 * FAMILY_COUNT + 1, detail);
+    /* f64_pack: one, then the values. */
+    StCase* pack_cases = &cases[2 * FAMILY_COUNT + 1];
+    memset(pack_cases, 0, 2 * sizeof(*pack_cases));
+    pack_cases[0].name = "f64_pack";
+    pack_cases[1].name = "f64_pack_const";
+    operands[0] = 0x00000000u;
+    operands[1] = 0x3ff00000u;
+    for (unsigned k = 0; k < PACK_COUNT; ++k) {
+        operands[2 + 2 * k] = (uint32_t)PACK_VALUES[k];
+        operands[3 + 2 * k] = (uint32_t)(PACK_VALUES[k] >> 32);
+    }
+    st_fill_words(out, 4 * PACK_COUNT, POISON);
+    StComputeShader pack;
+    if (!st_load_compute_shader(&arena, "/app0/assets/f64_pack.comp.sb", &pack)) {
+        return st_fail("reason=shader_load case=f64_pack");
+    }
+    table[0] = st_raw_buffer(operands, (2 + 2 * PACK_COUNT) * sizeof(uint32_t));
+    table[1] = st_raw_buffer(out, 4 * PACK_COUNT * sizeof(uint32_t));
+    if (!st_dispatch_and_wait(&queue, &pack, table, 1)) {
+        return st_fail("reason=submit case=f64_pack");
+    }
+    const char* mode = check_f64_pack(out, pack_cases);
+    printf("f64_pack: mode=%s\n", mode);
+    st_unload_compute_shader(&pack);
+
+    char detail[64];
+    snprintf(detail, sizeof(detail), "failed_ops=%u f64_mode=%s", failed_ops, mode);
+    return st_finish_cases(cases, 2 * FAMILY_COUNT + 3, detail);
 }
