@@ -1,0 +1,6 @@
+# shadPS4 log lines that fail the run. With UMA shared backing, a WRITE_DATA
+# into shared memory has to be ordered on the GPU timeline; this line means the
+# emulator waited for the GPU before writing instead (the fallback for blocks it
+# cannot write on the timeline), which would pass the cases without showing the
+# ordering.
+CP write at 0x[0-9a-f]+ size=[0-9]+ waits for the GPU
