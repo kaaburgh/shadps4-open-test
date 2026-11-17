@@ -219,6 +219,7 @@ infrastructure.
 | ID | Test | Phase | Exercises | Oracle via | Prio | Needs | mirror P | mirror R/D | shared P | shared R/D |
 |---|---|---|---|---|---|---|---|---|---|---|
 | A1 | `write_data_order` | E1C | `WRITE_DATA` between two readers | shader (`X`: CP) | P1 | PM4 | ✓ | R (`X` ✓) | ✗ #11 | ✗ #11 |
+| A1b | `write_data_interleave` | E1C | A1 with slow readers in 8 rounds, write-after-write, `COND_EXEC` after `WRITE_DATA`, label without EOP | shader + CP; host log | P1 | PM4 | ✓ | R (CP cases ✓) | ✗ #11 (fixed by the GPU-timeline `WRITE_DATA` branch) | same |
 | A2 | `wait_gpu_written` | E1C | `WAIT_REG_MEM` on a shader-written flag, same queue | CP label + shader | P2 | — | ✓ | R hang | ✓ | ✓ |
 | A3 | `cond_exec_gpu_predicate` | E1C | `COND_EXEC` on a shader-written predicate | CP | P1 | PM4 | ✓ | R | ✗ #11 | ✗ #11 |
 | A4 | `dma_order` | E1C/E3 | `DMA_DATA` copy/fill around dispatches; fill + wait | per case | P1 | — (+PM4 for `raw_wait`) | ✓ | R (a, b), ✓ (c), R hang (d) | ✓ | ✓ |
@@ -271,6 +272,36 @@ and after it.
 - Shared ✗: A reads `X` when it executes, after the `memcpy`, so `outA == 2`. The barriers do
   not change this: shadPS4 ignores them and still runs the `memcpy` at parse time. Tracked in
   kaaburgh/shadPS4#11.
+
+### A1b `write_data_interleave`
+
+**Purpose.** A narrow companion to A1 that a fix cannot pass by racing the GPU or by waiting
+for it. A1 has one short reader on each side of the write; an emulator that submits and then
+writes guest memory, or that waits for the GPU somewhere, can pass it.
+
+**Cases.** All in shared memory: `X`, the predicates, the markers and the label lie in one
+16 KiB block that the dispatches bind.
+- `interleave`: in one DCB, 8 rounds of a slow dispatch (copies `X` to `out[r]` after a
+  dependent 8192-step loop, so its read comes late) and a `WRITE_DATA` of 12 words of `X`;
+  `out[r]` must hold round `r`'s values exactly. A write that is submitted but not ordered
+  after the dispatch lands while it still spins (`saw_later_write`).
+- `gpu_then_cp`: a dispatch writes `Y`, then `WRITE_DATA` overwrites 4 words; the CP's words
+  must win. `cp_then_gpu`: the reverse on `Y2`; the dispatch's words must win.
+- `cond_after_cp`: `WRITE_DATA` sets two predicates that `COND_EXEC` reads in the same DCB.
+  A fix that defers the write must make the CP read wait for it.
+- `label_no_eop`: a slow dispatch, then `WRITE_DATA` of a 64-bit label, submitted without EOP
+  and without `sceGnmSubmitDone`; the CPU must see the label. A deferred write must reach
+  the GPU without a later submit.
+- `x_values`: final `X` and predicates.
+
+**Host oracle.** `forbid-log.txt` fails the run on the shadPS4 line that reports a
+`WRITE_DATA` waiting for the GPU. With an E0 capture, `tools/uma_e0/check_cp_write_order.py`
+in kaaburgh/shadPS4 counts GPU-timeline writes recorded in the same submission as an
+unexecuted dispatch and parse-time writes right after a `Finish`; it fails an
+implementation that waits for the GPU before each `WRITE_DATA`, which the guest cannot see.
+
+**Expected.** Mirror ✓ (Precise; Relaxed/Disabled R for the shader outputs). Shared ✗ #11
+before the fix (`interleave`, `gpu_then_cp`); ✓ with the GPU-timeline `WRITE_DATA`.
 
 ### A2 `wait_gpu_written`
 
